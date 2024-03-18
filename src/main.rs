@@ -198,8 +198,8 @@ impl StratSync for StratSyncService {
 
         let damage_id = parse_string_to_uuid(&payload.damage, "Damage id has an invalid format")?;
         let primary_target_id = match payload.primary_target {
-            Some(id) => Some(parse_string_to_uuid(
-                &id,
+            Some(ref id) => Some(parse_string_to_uuid(
+                id,
                 "Primary target id has an invalid format",
             )?),
             None => None,
@@ -289,9 +289,9 @@ impl StratSync for StratSyncService {
                 .tx
                 .send(Ok(EventResponse {
                     event: Some(Event::UpsertDamageOptionEvent(UpsertDamageOptionEvent {
-                        damage: damage_id.to_string(),
-                        num_shared: num_shared.map(|s| s as i32),
-                        primary_target: primary_target_id.map(|s| s.to_string()),
+                        damage: payload.damage.clone(),
+                        num_shared: payload.num_shared,
+                        primary_target: payload.primary_target.clone(),
                     })),
                 }))
                 .await
