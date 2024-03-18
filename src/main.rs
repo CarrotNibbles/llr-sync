@@ -257,19 +257,18 @@ impl StratSync for StratSyncService {
             )))?;
         }
 
-        let _ = strategy_context
+        let lock = strategy_context
             .damage_option_locks
             .get(&damage_id)
-            .unwrap()
-            .lock()
-            .await;
+            .unwrap();
+        let _guard = lock.lock().await;
 
         sqlx::query!(
             r#"INSERT INTO public.strategy_damage_options
-                        VALUES ($1, $2, $3, $4)
-                   ON CONFLICT (strategy, damage)
-                 DO UPDATE SET num_shared = EXCLUDED.num_shared,
-                               primary_target = EXCLUDED.primary_target"#,
+                    VALUES ($1, $2, $3, $4)
+               ON CONFLICT (strategy, damage)
+             DO UPDATE SET num_shared = EXCLUDED.num_shared,
+                           primary_target = EXCLUDED.primary_target"#,
             peer_context.strategy_id,
             damage_id,
             num_shared,
