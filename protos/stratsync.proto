@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package stratsync;
+
+import "google/protobuf/empty.proto";
+
+service StratSync {
+    rpc Event (SubscriptionRequest) returns (stream EventResponse);
+    rpc UpsertDamageOption (UpsertDamageOptionRequest) returns (google.protobuf.Empty);
+    rpc UpsertBox (UpsertBoxRequest) returns (google.protobuf.Empty);
+    rpc DeleteBox (DeleteBoxRequest) returns (google.protobuf.Empty);
+    rpc UpsertPlayer (UpsertPlayerRequest) returns (google.protobuf.Empty);
+    rpc DeletePlayer (DeletePlayerRequest) returns (google.protobuf.Empty);
+}
+
+message SubscriptionRequest {
+    string session = 1;
+    string strategy = 2;
+}
+
+message AuthorizationEvent {
+    string token = 1;
+}
+
+message UpsertDamageOptionRequest {
+    string token = 1;
+    string damage = 2;
+    optional int32 num_shared = 3;
+    optional string primary_target = 4;
+}
+
+message UpsertBoxRequest {
+    string token = 1;
+    string id = 2;
+    string player = 3;
+    string ability = 4;
+    int32 use_at = 5;
+}
+
+message DeleteBoxRequest {
+    string token = 1;
+    string id = 2;
+    string player = 3;
+    string ability = 4;
+}
+
+message UpsertPlayerRequest {
+    string token = 1;
+    string id = 2;
+    string job = 3;
+}
+
+message DeletePlayerRequest {
+    string token = 1;
+    string id = 2;
+}
+
+message UpsertDamageOptionEvent {
+    string damage = 2;
+    optional int32 num_shared = 3;
+    optional string primary_target = 4;
+}
+
+message UpsertBoxEvent {
+    string id = 2;
+    string player = 3;
+    string ability = 4;
+    int32 use_at = 5;
+}
+
+message DeleteBoxEvent {
+    string id = 2;
+    string player = 3;
+    string ability = 4;
+}
+
+message UpsertPlayerEvent {
+    string id = 2;
+    string job = 3;
+}
+
+message DeletePlayerEvent {
+    string id = 2;
+}
+
+message EventResponse {
+    oneof event {
+        AuthorizationEvent authorization_event = 1;
+        UpsertDamageOptionEvent upsert_damage_option_event = 2;
+        UpsertBoxEvent upsert_box_event = 3;
+        DeleteBoxEvent delete_box_event = 4;
+        UpsertPlayerEvent upsert_player_event = 5;
+        DeletePlayerEvent delete_player_event = 6;
+    }
+}
