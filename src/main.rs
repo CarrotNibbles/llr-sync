@@ -8,9 +8,12 @@ use stratsync::{
     AuthorizationEvent, DeleteBoxRequest, DeletePlayerRequest, EventResponse, SubscriptionRequest,
     UpsertBoxRequest, UpsertDamageOptionEvent, UpsertDamageOptionRequest, UpsertPlayerRequest,
 };
-use tokio::sync::{
-    mpsc::{self, Sender},
-    Mutex,
+use tokio::{
+    sync::{
+        mpsc::{self, Sender},
+        Mutex,
+    },
+    task::JoinSet,
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{transport::Server, Request, Response, Status};
@@ -125,40 +128,58 @@ impl StratSync for StratSyncService {
             vec![token.clone()]
         };
 
-        let damage_option_locks: Cache<Uuid, Arc<Mutex<()>>> = Cache::builder().build();
-        sqlx::query!(
-            r#"SELECT d.id
-                 FROM public.damages AS d
-                      JOIN public.gimmicks AS g
-                      ON d.gimmick = g.id
-                WHERE g.raid = $1"#,
-            raid_id
-        )
-        .fetch_all(&self.pool)
-        .await
-        .unwrap()
-        .iter()
-        .for_each(|row| damage_option_locks.insert(row.id, Arc::new(Mutex::new(()))));
+        if peers.len() > 1 {
+            let mut strategy_context =
+                (*self.strategy_context.get(&strategy_id).unwrap()).to_owned();
+            strategy_context.peers = peers;
 
-        let box_locks: Cache<(Uuid, Uuid), Arc<Mutex<()>>> = Cache::builder().build();
-        sqlx::query!(
-            r#"SELECT p.id as player_id, a.id as ability_id
-                 FROM public.strategy_players AS p
-                      JOIN public.abilities AS a
-                      ON p.job = a.job
-                WHERE p.strategy = $1"#,
-            strategy_id
-        )
-        .fetch_all(&self.pool)
-        .await
-        .unwrap()
-        .iter()
-        .for_each(|row| {
-            box_locks.insert((row.player_id, row.ability_id), Arc::new(Mutex::new(())))
-        });
+            self.strategy_context
+                .insert(strategy_id, Arc::new(strategy_context))
+        } else {
+            let damage_option_locks: Cache<Uuid, Arc<Mutex<()>>> = Cache::builder().build();
+            sqlx::query!(
+                r#"SELECT d.id
+                     FROM public.damages AS d
+                     JOIN public.gimmicks AS g
+                       ON d.gimmick = g.id
+                    WHERE g.raid = $1"#,
+                raid_id
+            )
+            .fetch_all(&self.pool)
+            .await
+            .unwrap()
+            .iter()
+            .for_each(|row| damage_option_locks.insert(row.id, Arc::new(Mutex::new(()))));
+
+            let box_locks: Cache<(Uuid, Uuid), Arc<Mutex<()>>> = Cache::builder().build();
+            sqlx::query!(
+                r#"SELECT p.id as player_id, a.id as ability_id
+                     FROM public.strategy_players AS p
+                     JOIN public.abilities AS a
+                       ON p.job = a.job
+                    WHERE p.strategy = $1"#,
+                strategy_id
+            )
+            .fetch_all(&self.pool)
+            .await
+            .unwrap()
+            .iter()
+            .for_each(|row| {
+                box_locks.insert((row.player_id, row.ability_id), Arc::new(Mutex::new(())))
+            });
+
+            self.strategy_context.insert(
+                strategy_id,
+                Arc::new(StrategyContext {
+                    peers,
+                    global_lock: Arc::new(Mutex::new(())),
+                    damage_option_locks,
+                    box_locks,
+                }),
+            );
+        }
 
         let (tx, rx) = mpsc::channel(32);
-
         self.peer_context.insert(
             token.clone(),
             Arc::new(PeerContext {
@@ -167,15 +188,6 @@ impl StratSync for StratSyncService {
                 strategy_id,
                 raid_id,
                 tx: tx.clone(),
-            }),
-        );
-        self.strategy_context.insert(
-            strategy_id,
-            Arc::new(StrategyContext {
-                peers,
-                global_lock: Arc::new(Mutex::new(())),
-                damage_option_locks,
-                box_locks,
             }),
         );
 
@@ -278,25 +290,27 @@ impl StratSync for StratSyncService {
         .await
         .unwrap();
 
+        let mut messages = JoinSet::new();
         for peer in &strategy_context.peers {
             if &payload.token != peer {
                 continue;
             }
 
-            self.peer_context
-                .get(peer)
-                .unwrap()
-                .tx
-                .send(Ok(EventResponse {
-                    event: Some(Event::UpsertDamageOptionEvent(UpsertDamageOptionEvent {
-                        damage: payload.damage.clone(),
-                        num_shared: payload.num_shared,
-                        primary_target: payload.primary_target.clone(),
-                    })),
-                }))
-                .await
-                .unwrap();
+            let tx = self.peer_context.get(peer).unwrap().tx.clone();
+            let event = Event::UpsertDamageOptionEvent(UpsertDamageOptionEvent {
+                damage: payload.damage.clone(),
+                num_shared: payload.num_shared,
+                primary_target: payload.primary_target.clone(),
+            });
+
+            messages.spawn(async move {
+                tx.send(Ok(EventResponse { event: Some(event) }))
+                    .await
+                    .unwrap()
+            });
         }
+
+        while let Some(_) = messages.join_next().await {}
 
         Ok(Response::new(()))
     }
