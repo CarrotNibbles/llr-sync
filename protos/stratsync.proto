@@ -7,9 +7,9 @@ import "google/protobuf/empty.proto";
 service StratSync {
     rpc Event (SubscriptionRequest) returns (stream EventResponse);
     rpc UpsertDamageOption (UpsertDamageOptionRequest) returns (google.protobuf.Empty);
-    rpc UpsertBox (UpsertBoxRequest) returns (google.protobuf.Empty);
-    rpc DeleteBox (DeleteBoxRequest) returns (google.protobuf.Empty);
-    rpc UpsertPlayer (UpsertPlayerRequest) returns (google.protobuf.Empty);
+    rpc UpsertEntry (UpsertEntryRequest) returns (google.protobuf.Empty);
+    rpc DeleteEntry (DeleteEntryRequest) returns (google.protobuf.Empty);
+    rpc InsertPlayer (InsertPlayerRequest) returns (google.protobuf.Empty);
     rpc DeletePlayer (DeletePlayerRequest) returns (google.protobuf.Empty);
 }
 
@@ -18,36 +18,49 @@ message SubscriptionRequest {
     string strategy = 2;
 }
 
-message AuthorizationEvent {
+message DamageOption {
+    string damage = 1;
+    optional int32 num_shared = 2;
+    optional string primary_target = 3;
+}
+
+message Player {
+    string id = 1;
+    string job = 2;
+}
+
+message Entry {
+    string id = 1;
+    string player = 2;
+    string ability = 3;
+    int32 use_at = 4;
+}
+
+message InitializationEvent {
     string token = 1;
+    repeated Player players = 2;
+    repeated DamageOption damage_options = 3;
+    repeated Entry entries = 4;
 }
 
 message UpsertDamageOptionRequest {
     string token = 1;
-    string damage = 2;
-    optional int32 num_shared = 3;
-    optional string primary_target = 4;
+    DamageOption damage_option = 2;
 }
 
-message UpsertBoxRequest {
+message UpsertEntryRequest {
     string token = 1;
-    string id = 2;
-    string player = 3;
-    string ability = 4;
-    int32 use_at = 5;
+    Entry entry = 2;
 }
 
-message DeleteBoxRequest {
+message DeleteEntryRequest {
     string token = 1;
     string id = 2;
-    string player = 3;
-    string ability = 4;
 }
 
-message UpsertPlayerRequest {
+message InsertPlayerRequest {
     string token = 1;
-    string id = 2;
-    string job = 3;
+    Player player = 2;
 }
 
 message DeletePlayerRequest {
@@ -56,40 +69,32 @@ message DeletePlayerRequest {
 }
 
 message UpsertDamageOptionEvent {
-    string damage = 2;
-    optional int32 num_shared = 3;
-    optional string primary_target = 4;
+    DamageOption damage_option = 1;
 }
 
-message UpsertBoxEvent {
-    string id = 2;
-    string player = 3;
-    string ability = 4;
-    int32 use_at = 5;
+message UpsertEntryEvent {
+    Entry entry = 1;
 }
 
-message DeleteBoxEvent {
-    string id = 2;
-    string player = 3;
-    string ability = 4;
+message DeleteEntryEvent {
+    string id = 1;
 }
 
-message UpsertPlayerEvent {
-    string id = 2;
-    string job = 3;
+message InsertPlayerEvent {
+    Player player = 1;
 }
 
 message DeletePlayerEvent {
-    string id = 2;
+    string id = 1;
 }
 
 message EventResponse {
     oneof event {
-        AuthorizationEvent authorization_event = 1;
+        InitializationEvent initialization_event = 1;
         UpsertDamageOptionEvent upsert_damage_option_event = 2;
-        UpsertBoxEvent upsert_box_event = 3;
-        DeleteBoxEvent delete_box_event = 4;
-        UpsertPlayerEvent upsert_player_event = 5;
+        UpsertEntryEvent upsert_entry_event = 3;
+        DeleteEntryEvent delete_entry_event = 4;
+        InsertPlayerEvent insert_player_event = 5;
         DeletePlayerEvent delete_player_event = 6;
     }
 }

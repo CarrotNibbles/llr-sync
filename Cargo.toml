@@ -13,6 +13,8 @@ tokio-stream = "0.1.14"
 tonic = "0.11.0"
 dotenvy = "0.15.7"
 moka = { version = "0.12.5", features = ["sync"] }
+strum = "0.26"
+strum_macros = "0.26"
 
 [build-dependencies]
 tonic-build = "0.11.0"
