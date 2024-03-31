@@ -843,6 +843,7 @@ dependencies = [
  "dotenvy",
  "moka",
  "prost",
+ "prost-build",
  "sqlx",
  "strum",
  "strum_macros",
