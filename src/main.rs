@@ -1,3 +1,4 @@
+use bcrypt::verify;
 use dotenvy::dotenv;
 use moka::sync::Cache;
 use sqlx::{postgres::PgPoolOptions, types::Uuid, Pool, Postgres};
@@ -6,9 +7,9 @@ use stratsync::{
     event_response::Event,
     strat_sync_server::{StratSync, StratSyncServer},
     DamageOption, DeleteEntryEvent, DeleteEntryRequest, DeletePlayerEvent, DeletePlayerRequest,
-    Entry, EventResponse, InitializationEvent, InsertPlayerEvent, InsertPlayerRequest, Player,
-    SubscriptionRequest, UpsertDamageOptionEvent, UpsertDamageOptionRequest, UpsertEntryEvent,
-    UpsertEntryRequest,
+    ElevationRequest, Entry, EventResponse, InitializationEvent, InsertPlayerEvent,
+    InsertPlayerRequest, Player, SubscriptionRequest, UpsertDamageOptionEvent,
+    UpsertDamageOptionRequest, UpsertEntryEvent, UpsertEntryRequest,
 };
 use strum_macros::EnumString;
 use tokio::{
@@ -49,12 +50,12 @@ pub enum Job {
     SMN,
     BLU,
     LB,
+    PCT,
+    VPR,
 }
 
 #[derive(Debug, Clone)]
 pub struct PeerContext {
-    pub user_id: Uuid,
-    pub session_id: Uuid,
     pub strategy_id: Uuid,
     pub raid_id: Uuid,
     pub tx: Sender<Result<EventResponse, Status>>,
@@ -64,6 +65,7 @@ pub struct PeerContext {
 pub struct StrategyContext {
     pub raid_id: Uuid,
     pub peers: Vec<String>,
+    pub elevated_peers: Vec<String>,
     pub players: Vec<Player>,
     pub damage_options: Vec<DamageOption>,
     pub entries: Vec<Entry>,
@@ -84,7 +86,7 @@ pub struct RaidInfo {
 }
 
 #[derive(Debug, Clone)]
-pub struct AbilityInfo {
+pub struct ActionInfo {
     pub id: Uuid,
     pub cooldown: i32,
     pub stacks: i32,
@@ -92,7 +94,7 @@ pub struct AbilityInfo {
 
 pub struct StratSyncService {
     pub pool: Pool<Postgres>,
-    pub ability_cache: Cache<String, Arc<Vec<AbilityInfo>>>,
+    pub action_cache: Cache<String, Arc<Vec<ActionInfo>>>,
     pub raid_cache: Cache<Uuid, Arc<RaidInfo>>,
     pub strategy_lock: Cache<Uuid, Arc<Mutex<()>>>,
     pub strategy_context: Cache<Uuid, Arc<StrategyContext>>,
@@ -113,29 +115,14 @@ impl StratSync for StratSyncService {
     ) -> Result<Response<Self::EventStream>, Status> {
         let payload = request.into_inner();
 
-        let session_id =
-            parse_string_to_uuid(&payload.session, "Session id has an invalid format")?;
         let strategy_id =
             parse_string_to_uuid(&payload.strategy, "Strategy id has an invalid format")?;
-
-        let user_id = sqlx::query!(
-            r#"SELECT user_id
-                 FROM auth.sessions
-                WHERE id = $1"#,
-            session_id
-        )
-        .fetch_one(&self.pool)
-        .await
-        .or(Err(Status::unauthenticated("Session not found")))?
-        .user_id;
 
         let raid_id = sqlx::query!(
             r#"SELECT raid
                  FROM public.strategies
-                WHERE id = $1
-                      AND author = $2"#,
-            strategy_id,
-            user_id
+                WHERE id = $1"#,
+            strategy_id
         )
         .fetch_one(&self.pool)
         .await
@@ -187,17 +174,24 @@ impl StratSync for StratSyncService {
 
         let token = Uuid::new_v4().to_string();
 
-        let peers: Vec<String> = if let Some(peer_context) = self.strategy_context.get(&strategy_id)
-        {
-            peer_context
-                .peers
-                .iter()
-                .chain([token.clone()].iter())
-                .map(|el| el.to_owned())
-                .collect()
-        } else {
-            vec![token.clone()]
-        };
+        let peers: Vec<String> =
+            if let Some(strategy_context) = self.strategy_context.get(&strategy_id) {
+                strategy_context
+                    .peers
+                    .iter()
+                    .chain([token.clone()].iter())
+                    .map(|el| el.to_owned())
+                    .collect()
+            } else {
+                vec![token.clone()]
+            };
+
+        let elevated_peers: Vec<String> =
+            if let Some(strategy_context) = self.strategy_context.get(&strategy_id) {
+                strategy_context.elevated_peers.clone()
+            } else {
+                vec![]
+            };
 
         let players: Vec<Player>;
         let damage_options: Vec<DamageOption>;
@@ -244,7 +238,7 @@ impl StratSync for StratSyncService {
 
             entries = sqlx::query_as!(
                 Entry,
-                r#"SELECT e.id AS id, player, ability, use_at
+                r#"SELECT e.id AS id, player, action, use_at
                      FROM public.strategy_player_entries AS e
                           JOIN public.strategy_players AS p
                           ON e.player = p.id
@@ -260,6 +254,7 @@ impl StratSync for StratSyncService {
                 Arc::new(StrategyContext {
                     raid_id,
                     peers,
+                    elevated_peers,
                     players: players.clone(),
                     damage_options: damage_options.clone(),
                     entries: entries.clone(),
@@ -271,8 +266,6 @@ impl StratSync for StratSyncService {
         self.peer_context.insert(
             token.clone(),
             Arc::new(PeerContext {
-                user_id,
-                session_id,
                 strategy_id,
                 raid_id,
                 tx: tx.clone(),
@@ -291,6 +284,51 @@ impl StratSync for StratSyncService {
         .unwrap();
 
         Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn elevate(&self, request: Request<ElevationRequest>) -> Result<Response<()>, Status> {
+        let payload = request.into_inner();
+
+        let peer_context = self
+            .peer_context
+            .get(&payload.token)
+            .ok_or(Status::unauthenticated("Token not found"))?;
+
+        let lock = self.strategy_lock.get(&peer_context.strategy_id).unwrap();
+        let _guard = lock.lock().await;
+
+        let strategy_context = self
+            .strategy_context
+            .get(&peer_context.strategy_id)
+            .ok_or(Status::unauthenticated("Strategy not opened"))?;
+
+        if strategy_context.elevated_peers.contains(&payload.token) {
+            return Err(Status::failed_precondition("Already elevated"));
+        }
+
+        let strategy_password = sqlx::query!(
+            r#"SELECT password
+                 FROM public.strategies
+                WHERE id = $1"#,
+            peer_context.strategy_id
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+        .password;
+
+        if !verify(payload.password.as_str(), strategy_password.as_str()).unwrap_or(false) {
+            return Err(Status::permission_denied("Invalid password"));
+        }
+
+        let mut strategy_context_after = (*strategy_context).to_owned();
+        strategy_context_after
+            .elevated_peers
+            .push(payload.token.clone());
+        self.strategy_context
+            .insert(peer_context.strategy_id, Arc::new(strategy_context_after));
+
+        Ok(Response::new(()))
     }
 
     async fn upsert_damage_option(
@@ -312,6 +350,15 @@ impl StratSync for StratSyncService {
             .get(&peer_context.strategy_id)
             .ok_or(Status::unauthenticated("Strategy not opened"))?;
         let raid = self.raid_cache.get(&strategy_context.raid_id).unwrap();
+
+        if strategy_context
+            .elevated_peers
+            .iter()
+            .find(|&s| s == &payload.token)
+            == None
+        {
+            return Err(Status::permission_denied("Not elevated"));
+        }
 
         let damage_option = payload
             .damage_option
@@ -424,12 +471,21 @@ impl StratSync for StratSyncService {
             .get(&peer_context.strategy_id)
             .ok_or(Status::unauthenticated("Strategy not opened"))?;
 
+        if strategy_context
+            .elevated_peers
+            .iter()
+            .find(|&s| s == &payload.token)
+            == None
+        {
+            return Err(Status::permission_denied("Not elevated"));
+        }
+
         let entry = payload
             .entry
             .ok_or(Status::invalid_argument("No entry specified"))?;
         let id = parse_string_to_uuid(&entry.id, "id has an invalid format")?;
         let player_id = parse_string_to_uuid(&entry.player, "player has an invalid format")?;
-        let ability_id = parse_string_to_uuid(&entry.ability, "ability has an invalid format")?;
+        let action_id = parse_string_to_uuid(&entry.action, "action has an invalid format")?;
         let use_at = entry.use_at;
 
         let player = strategy_context
@@ -438,14 +494,14 @@ impl StratSync for StratSyncService {
             .find(|player| player.id == player_id.to_string())
             .ok_or(Status::failed_precondition("Player not found"))?;
 
-        let ability = self
-            .ability_cache
+        let action = self
+            .action_cache
             .get(&player.job)
             .unwrap()
             .iter()
-            .find(|ability| ability.id == ability_id)
-            .map(|ability| ability.to_owned())
-            .ok_or(Status::failed_precondition("Ability not found"))?;
+            .find(|action| action.id == action_id)
+            .map(|action| action.to_owned())
+            .ok_or(Status::failed_precondition("Action not found"))?;
 
         let mut entries_after = strategy_context.entries.clone();
         let mut original_entry: Option<Entry> = None;
@@ -462,9 +518,19 @@ impl StratSync for StratSyncService {
         let mut column_covering: Vec<_> = entries_after
             .iter()
             .filter(|entry| {
-                entry.player == player_id.to_string() && entry.ability == ability_id.to_string()
+                entry.player == player_id.to_string() && entry.action == action_id.to_string()
             })
-            .map(|entry| (entry.use_at, entry.use_at + ability.cooldown))
+            .map(|entry| {
+                (
+                    entry.use_at,
+                    entry.use_at
+                        + if action.stacks > 1 {
+                            0
+                        } else {
+                            action.cooldown
+                        },
+                )
+            })
             .collect();
 
         column_covering.sort();
@@ -492,10 +558,10 @@ impl StratSync for StratSyncService {
                         VALUES ($1, $2, $3, $4)
                    ON CONFLICT (id)
                  DO UPDATE SET player = EXCLUDED.player,
-                               ability = EXCLUDED.ability,
+                               action = EXCLUDED.action,
                                use_at = EXCLUDED.use_at"#,
                 player_id,
-                ability_id,
+                action_id,
                 use_at,
                 id,
             )
@@ -550,6 +616,15 @@ impl StratSync for StratSyncService {
             .strategy_context
             .get(&peer_context.strategy_id)
             .ok_or(Status::unauthenticated("Strategy not opened"))?;
+
+        if strategy_context
+            .elevated_peers
+            .iter()
+            .find(|&s| s == &payload.token)
+            == None
+        {
+            return Err(Status::permission_denied("Not elevated"));
+        }
 
         let id = parse_string_to_uuid(&payload.id, "id has an invalid format")?;
 
@@ -619,6 +694,15 @@ impl StratSync for StratSyncService {
             .strategy_context
             .get(&peer_context.strategy_id)
             .ok_or(Status::unauthenticated("Strategy not opened"))?;
+
+        if strategy_context
+            .elevated_peers
+            .iter()
+            .find(|&s| s == &payload.token)
+            == None
+        {
+            return Err(Status::permission_denied("Not elevated"));
+        }
 
         let player = payload
             .player
@@ -692,6 +776,15 @@ impl StratSync for StratSyncService {
             .strategy_context
             .get(&peer_context.strategy_id)
             .ok_or(Status::unauthenticated("Strategy not opened"))?;
+
+        if strategy_context
+            .elevated_peers
+            .iter()
+            .find(|&s| s == &payload.token)
+            == None
+        {
+            return Err(Status::permission_denied("Not elevated"));
+        }
 
         let id = parse_string_to_uuid(&payload.id, "id has an invalid format")?;
 
@@ -769,11 +862,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .expect("Unable to connect to database");
 
-        let ability_cache: Cache<String, Arc<Vec<AbilityInfo>>> = Cache::builder().build();
+        let action_cache: Cache<String, Arc<Vec<ActionInfo>>> = Cache::builder().build();
 
         sqlx::query!(
             r#"SELECT id, job AS "job: String", cooldown, stacks
-               FROM public.abilities"#
+               FROM public.actions"#
         )
         .fetch_all(&pool)
         .await
@@ -781,14 +874,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .for_each(|row| {
             let mut abilities =
-                (*ability_cache.get(&row.job).unwrap_or(Arc::new(vec![]))).to_owned();
-            abilities.push(AbilityInfo {
+                (*action_cache.get(&row.job).unwrap_or(Arc::new(vec![]))).to_owned();
+            abilities.push(ActionInfo {
                 id: row.id,
                 cooldown: row.cooldown,
                 stacks: row.stacks,
             });
 
-            ability_cache.insert(row.job.to_owned(), Arc::new(abilities))
+            action_cache.insert(row.job.to_owned(), Arc::new(abilities))
         });
 
         let raid_cache: Cache<Uuid, Arc<RaidInfo>> = Cache::builder().build();
@@ -822,7 +915,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         StratSyncService {
             pool,
-            ability_cache,
+            action_cache,
             raid_cache,
             strategy_lock,
             strategy_context,

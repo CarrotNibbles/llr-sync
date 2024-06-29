@@ -15,6 +15,7 @@ dotenvy = "0.15.7"
 moka = { version = "0.12.5", features = ["sync"] }
 strum = "0.26"
 strum_macros = "0.26"
+bcrypt = "0.15"
 
 [build-dependencies]
 tonic-build = "0.11.0"
