@@ -21,6 +21,8 @@ use tokio::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{transport::Server, Request, Response, Status};
+use tonic_web::GrpcWebLayer;
+use tower_http::cors::{AllowHeaders, AllowOrigin, CorsLayer};
 
 pub mod stratsync {
     tonic::include_proto!("stratsync");
@@ -924,6 +926,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     Server::builder()
+        .accept_http1(true)
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::mirror_request())
+                .allow_headers(AllowHeaders::mirror_request()),
+        )
+        .layer(GrpcWebLayer::new())
         .add_service(StratSyncServer::new(stratsync_service))
         .serve(address)
         .await?;
