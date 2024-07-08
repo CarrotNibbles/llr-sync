@@ -442,6 +442,11 @@ impl StratSync for StratSyncService {
                 damage_option: Some(damage_option.clone()),
             });
 
+            if tx.is_closed() {
+                self.peer_context.invalidate(peer);
+                continue;
+            }
+
             messages.spawn(async move {
                 tx.send(Ok(EventResponse { event: Some(event) }))
                     .await
@@ -587,6 +592,11 @@ impl StratSync for StratSyncService {
                     entry: Some(entry.clone()),
                 });
 
+                if tx.is_closed() {
+                    self.peer_context.invalidate(peer);
+                    continue;
+                }
+
                 messages.spawn(async move {
                     tx.send(Ok(EventResponse { event: Some(event) }))
                         .await
@@ -665,6 +675,11 @@ impl StratSync for StratSyncService {
 
             let tx = self.peer_context.get(peer).unwrap().tx.clone();
             let event = Event::DeleteEntryEvent(DeleteEntryEvent { id: id.to_string() });
+
+            if tx.is_closed() {
+                self.peer_context.invalidate(peer);
+                continue;
+            }
 
             messages.spawn(async move {
                 tx.send(Ok(EventResponse { event: Some(event) }))
@@ -747,6 +762,11 @@ impl StratSync for StratSyncService {
             let event = Event::InsertPlayerEvent(InsertPlayerEvent {
                 player: Some(player.clone()),
             });
+
+            if tx.is_closed() {
+                self.peer_context.invalidate(peer);
+                continue;
+            }
 
             messages.spawn(async move {
                 tx.send(Ok(EventResponse { event: Some(event) }))
@@ -833,6 +853,11 @@ impl StratSync for StratSyncService {
 
             let tx = self.peer_context.get(peer).unwrap().tx.clone();
             let event = Event::DeletePlayerEvent(DeletePlayerEvent { id: id.to_string() });
+
+            if tx.is_closed() {
+                self.peer_context.invalidate(peer);
+                continue;
+            }
 
             messages.spawn(async move {
                 tx.send(Ok(EventResponse { event: Some(event) }))
