@@ -6,10 +6,9 @@ use std::{env, str::FromStr, sync::Arc, time::Duration};
 use stratsync::{
     event_response::Event,
     strat_sync_server::{StratSync, StratSyncServer},
-    DamageOption, DeleteEntryEvent, DeleteEntryRequest, DeletePlayerEvent, DeletePlayerRequest,
-    ElevationRequest, Entry, EventResponse, InitializationEvent, InsertPlayerEvent,
-    InsertPlayerRequest, Player, SubscriptionRequest, UpsertDamageOptionEvent,
-    UpsertDamageOptionRequest, UpsertEntryEvent, UpsertEntryRequest,
+    DamageOption, DeleteEntryEvent, DeleteEntryRequest, ElevationRequest, Entry, EventResponse,
+    InitializationEvent, Player, SubscriptionRequest, UpdatePlayerJobEvent, UpdatePlayerJobRequest,
+    UpsertDamageOptionEvent, UpsertDamageOptionRequest, UpsertEntryEvent, UpsertEntryRequest,
 };
 use strum_macros::EnumString;
 use tokio::{
@@ -212,8 +211,11 @@ impl StratSync for StratSyncService {
         } else {
             players = sqlx::query_as!(
                 Player,
-                r#"SELECT id, job AS "job: String"
-                     FROM public.strategy_players
+                r#"  WITH ordered_table AS (SELECT *
+                                            FROM public.strategy_players
+                                            ORDER BY "order")
+                   SELECT id, job AS "job: String", "order"
+                     FROM ordered_table
                     WHERE strategy = $1"#,
                 strategy_id
             )
@@ -501,9 +503,13 @@ impl StratSync for StratSyncService {
             .find(|player| player.id == player_id.to_string())
             .ok_or(Status::failed_precondition("Player not found"))?;
 
+        let job = player.job.clone().ok_or(Status::failed_precondition(
+            "Cannot upsert entries with an empty job",
+        ))?;
+
         let action = self
             .action_cache
-            .get(&player.job)
+            .get(&job)
             .unwrap()
             .iter()
             .find(|action| action.id == action_id)
@@ -693,9 +699,9 @@ impl StratSync for StratSyncService {
         Ok(Response::new(()))
     }
 
-    async fn insert_player(
+    async fn update_player_job(
         &self,
-        request: Request<InsertPlayerRequest>,
+        request: Request<UpdatePlayerJobRequest>,
     ) -> Result<Response<()>, Status> {
         let payload = request.into_inner();
 
@@ -721,34 +727,51 @@ impl StratSync for StratSyncService {
             return Err(Status::permission_denied("Not elevated"));
         }
 
-        let player = payload
-            .player
-            .ok_or(Status::invalid_argument("No player specified"))?;
-        let id = parse_string_to_uuid(&player.id, "id has an invalid format")?;
-        let job =
-            Job::from_str(player.job.as_str()).or(Err(Status::invalid_argument("Invalid job")))?;
+        let job_as_string = payload.job.clone();
 
-        if let Some(_) = strategy_context
+        let id = parse_string_to_uuid(&payload.id, "id has an invalid format")?;
+        let job = if let Some(j) = &payload.job {
+            Some(Job::from_str(j).or(Err(Status::invalid_argument("Invalid job")))?)
+        } else {
+            None
+        };
+
+        strategy_context
             .players
             .iter()
             .find(|player| player.id == id.to_string())
-        {
-            return Err(Status::failed_precondition("Duplicate player id"));
-        }
+            .ok_or(Status::failed_precondition("Player not found"))?;
 
         sqlx::query!(
-            r#"INSERT INTO public.strategy_players
-                    VALUES ($1, $2, $3)"#,
+            r#"UPDATE public.strategy_players
+                  SET job = $1
+                WHERE id = $2"#,
+            job as Option<Job>,
             id,
-            peer_context.strategy_id,
-            job as Job,
+        )
+        .execute(&self.pool)
+        .await
+        .unwrap();
+
+        sqlx::query!(
+            r#"DELETE FROM public.strategy_player_entries
+                     WHERE player = $1"#,
+            id,
         )
         .execute(&self.pool)
         .await
         .unwrap();
 
         let mut strategy_context_after = (*strategy_context).to_owned();
-        strategy_context_after.players.push(player.clone());
+        strategy_context_after
+            .players
+            .iter_mut()
+            .find(|player| player.id == id.to_string())
+            .unwrap()
+            .job = payload.job.clone();
+        strategy_context_after
+            .entries
+            .retain(|entry| entry.player != id.to_string());
         self.strategy_context
             .insert(peer_context.strategy_id, Arc::new(strategy_context_after));
 
@@ -759,100 +782,10 @@ impl StratSync for StratSyncService {
             }
 
             let tx = self.peer_context.get(peer).unwrap().tx.clone();
-            let event = Event::InsertPlayerEvent(InsertPlayerEvent {
-                player: Some(player.clone()),
+            let event = Event::UpdatePlayerJobEvent(UpdatePlayerJobEvent {
+                id: id.to_string(),
+                job: job_as_string.clone(),
             });
-
-            if tx.is_closed() {
-                self.peer_context.invalidate(peer);
-                continue;
-            }
-
-            messages.spawn(async move {
-                tx.send(Ok(EventResponse { event: Some(event) }))
-                    .await
-                    .unwrap()
-            });
-        }
-
-        while let Some(_) = messages.join_next().await {}
-
-        Ok(Response::new(()))
-    }
-
-    async fn delete_player(
-        &self,
-        request: Request<DeletePlayerRequest>,
-    ) -> Result<Response<()>, Status> {
-        let payload = request.into_inner();
-
-        let peer_context = self
-            .peer_context
-            .get(&payload.token)
-            .ok_or(Status::unauthenticated("Token not found"))?;
-
-        let lock = self.strategy_lock.get(&peer_context.strategy_id).unwrap();
-        let _guard = lock.lock().await;
-
-        let strategy_context = self
-            .strategy_context
-            .get(&peer_context.strategy_id)
-            .ok_or(Status::unauthenticated("Strategy not opened"))?;
-
-        if strategy_context
-            .elevated_peers
-            .iter()
-            .find(|&s| s == &payload.token)
-            == None
-        {
-            return Err(Status::permission_denied("Not elevated"));
-        }
-
-        let id = parse_string_to_uuid(&payload.id, "id has an invalid format")?;
-
-        let mut players_after = strategy_context.players.clone();
-        let mut delta_len = players_after.len();
-        players_after = players_after
-            .iter()
-            .filter(|player| player.id != id.to_string())
-            .map(|player| player.to_owned())
-            .collect();
-        delta_len -= players_after.len();
-
-        let mut entries_after = strategy_context.entries.clone();
-        entries_after = entries_after
-            .iter()
-            .filter(|entry| entry.player != id.to_string())
-            .map(|entry| entry.to_owned())
-            .collect();
-
-        if delta_len == 0 {
-            return Err(Status::failed_precondition("Player not found"));
-        }
-
-        sqlx::query!(
-            r#"DELETE FROM public.strategy_players
-                     WHERE id = $1"#,
-            id,
-        )
-        .execute(&self.pool)
-        .await
-        .unwrap();
-
-        let mut strategy_context_after = (*strategy_context).to_owned();
-        strategy_context_after.players = players_after;
-        strategy_context_after.entries = entries_after;
-        self.strategy_context
-            .insert(peer_context.strategy_id, Arc::new(strategy_context_after));
-
-        let mut messages = JoinSet::new();
-        for peer in &strategy_context.peers {
-            if &payload.token == peer {
-                continue;
-            }
-
-            let tx = self.peer_context.get(peer).unwrap().tx.clone();
-            let event = Event::DeletePlayerEvent(DeletePlayerEvent { id: id.to_string() });
 
             if tx.is_closed() {
                 self.peer_context.invalidate(peer);
