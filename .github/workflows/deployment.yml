@@ -40,6 +40,8 @@ jobs:
           command: build
           use-cross: true
           args: --release --target x86_64-unknown-linux-musl
+        env:
+          PROTOC: /usr/bin/protoc
 
       - uses: docker/login-action@v2
         with:
