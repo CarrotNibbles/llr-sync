@@ -1,8 +1,8 @@
 use bcrypt::verify;
-use dotenvy::dotenv;
+use dotenvy_macro::dotenv;
 use moka::sync::Cache;
 use sqlx::{postgres::PgPoolOptions, types::Uuid, Pool, Postgres};
-use std::{env, str::FromStr, sync::Arc, time::Duration};
+use std::{str::FromStr, sync::Arc, time::Duration};
 use stratsync::{
     event_response::Event,
     strat_sync_server::{StratSync, StratSyncServer},
@@ -807,18 +807,12 @@ impl StratSync for StratSyncService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenv().expect(".env file not found");
-
     let address = "[::1]:8080".parse().unwrap();
 
     let stratsync_service = {
         let pool = PgPoolOptions::new()
             .max_connections(15)
-            .connect(
-                env::var("DATABASE_URL")
-                    .expect("DATABASE_URL not found")
-                    .as_str(),
-            )
+            .connect(dotenv!("DATABASE_URL"))
             .await
             .expect("Unable to connect to database");
 
