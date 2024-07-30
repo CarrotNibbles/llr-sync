@@ -25,7 +25,7 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/            
+            target/
           key: cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-
 
@@ -45,7 +45,7 @@ jobs:
           push: true
           context: .
           file: ./Dockerfile
-          tags: ${{ secrets.DOCKER_REGISTRY }}/llr_sync:latest
+          tags: ${{ secrets.DOCKER_REGISTRY }}/llr/sync:latest
           platforms: linux/amd64
 
       - uses: appleboy/ssh-action@master
@@ -54,7 +54,7 @@ jobs:
           username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_KEY }}
           script: |
-            docker pull ${{ secrets.DOCKER_REGISTRY }}/llr_sync:latest
+            docker pull ${{ secrets.DOCKER_REGISTRY }}/llr/sync:latest
             docker stop llr_sync || true
             docker rm llr_sync || true
-            docker run -d --name llr_sync --restart always -p 7100:8080 ${{ secrets.DOCKER_REGISTRY }}/llr_sync:latest
+            docker run -d --name llr_sync --restart always -p 7100:8080 ${{ secrets.DOCKER_REGISTRY }}/llr/sync:latest
