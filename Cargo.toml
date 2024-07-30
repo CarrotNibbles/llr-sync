@@ -24,7 +24,9 @@ moka = { version = "0.12.5", features = ["sync"] }
 strum = "0.26"
 strum_macros = "0.26"
 bcrypt = "0.15"
-tower-http = { version = "0.5.2", features = ["cors"] }
+tower-http = { version = "0.5.2", features = ["cors", "trace"] }
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
 
 [build-dependencies]
 tonic-build = "0.12.1"
