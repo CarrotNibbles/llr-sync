@@ -13,19 +13,19 @@ sqlx = { version = "0.7", features = [
     "uuid",
     "time",
 ] }
-prost = "0.12.3"
+prost = "0.13.1"
 tokio = { version = "1.36.0", features = ["macros", "rt-multi-thread"] }
 tokio-stream = "0.1.14"
-tonic = "0.11.0"
-tonic-web = "0.11.0"
+tonic = "0.12.1"
+tonic-web = "0.12.1"
 dotenvy = "0.15.7"
 dotenvy_macro = "0.15.7"
 moka = { version = "0.12.5", features = ["sync"] }
 strum = "0.26"
 strum_macros = "0.26"
 bcrypt = "0.15"
-tower-http = { version = "0.4.4", features = ["cors"] }
+tower-http = { version = "0.5.2", features = ["cors"] }
 
 [build-dependencies]
-tonic-build = "0.11.0"
-prost-build = "0.12.3"
+tonic-build = "0.12.1"
+protox = "0.7.0"

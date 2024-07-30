@@ -11,17 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - id: setup_protoc
-        uses: arduino/setup-protoc@v3
-
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           override: true
           target: x86_64-unknown-linux-musl
-
-      - run: |
-          echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> .env
 
       - uses: actions/cache@v3
         continue-on-error: false
@@ -31,17 +25,14 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+            target/            
+          key: cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-
 
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          use-cross: true
-          args: --release --target x86_64-unknown-linux-musl
-        env:
-          PROTOC: ${{ steps.setup_protoc.outputs.path }}/bin/protoc
+      - run: |
+          cargo install cross --git https://github.com/cross-rs/cross
+          echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> .env
+          cross build --release --target x86_64-unknown-linux-musl
 
       - uses: docker/login-action@v2
         with:
