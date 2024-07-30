@@ -807,7 +807,7 @@ impl StratSync for StratSyncService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let address = "[::1]:8080".parse().unwrap();
+    let address = "[::]:8080".parse().unwrap();
 
     let stratsync_service = {
         let pool = PgPoolOptions::new()
