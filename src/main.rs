@@ -21,7 +21,10 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{transport::Server, Request, Response, Status};
 use tonic_web::GrpcWebLayer;
-use tower_http::{cors::{AllowHeaders, AllowOrigin, CorsLayer}, trace::TraceLayer};
+use tower_http::{
+    cors::{AllowHeaders, AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 
 pub mod stratsync {
     tonic::include_proto!("stratsync");
@@ -413,19 +416,27 @@ impl StratSync for StratSyncService {
             .map(|damage_option| damage_option.to_owned())
             .collect();
 
-        sqlx::query!(
-            r#"INSERT INTO public.strategy_damage_options
-                    VALUES ($1, $2, $3, $4)
-               ON CONFLICT (strategy, damage)
-             DO UPDATE SET num_shared = EXCLUDED.num_shared,
-                           primary_target = EXCLUDED.primary_target"#,
-            peer_context.strategy_id,
-            damage_id,
-            num_shared,
-            primary_target_id
+        tokio::try_join!(
+            sqlx::query!(
+                r#"INSERT INTO public.strategy_damage_options
+                        VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (strategy, damage)
+                 DO UPDATE SET num_shared = EXCLUDED.num_shared,
+                               primary_target = EXCLUDED.primary_target"#,
+                peer_context.strategy_id,
+                damage_id,
+                num_shared,
+                primary_target_id
+            )
+            .execute(&self.pool),
+            sqlx::query!(
+                r#"UPDATE public.strategies
+                      SET id = $1
+                    WHERE id = $1"#,
+                peer_context.strategy_id,
+            )
+            .execute(&self.pool),
         )
-        .execute(&self.pool)
-        .await
         .unwrap();
 
         let mut strategy_context_after = (*strategy_context).to_owned();
@@ -566,20 +577,28 @@ impl StratSync for StratSyncService {
                 .await
                 .unwrap();
         } else {
-            sqlx::query!(
-                r#"INSERT INTO public.strategy_player_entries
-                        VALUES ($1, $2, $3, $4)
-                   ON CONFLICT (id)
-                 DO UPDATE SET player = EXCLUDED.player,
-                               action = EXCLUDED.action,
-                               use_at = EXCLUDED.use_at"#,
-                player_id,
-                action_id,
-                use_at,
-                id,
+            tokio::try_join!(
+                sqlx::query!(
+                    r#"INSERT INTO public.strategy_player_entries
+                            VALUES ($1, $2, $3, $4)
+                       ON CONFLICT (id)
+                     DO UPDATE SET player = EXCLUDED.player,
+                                   action = EXCLUDED.action,
+                                   use_at = EXCLUDED.use_at"#,
+                    player_id,
+                    action_id,
+                    use_at,
+                    id,
+                )
+                .execute(&self.pool),
+                sqlx::query!(
+                    r#"UPDATE public.strategies
+                          SET id = $1
+                        WHERE id = $1"#,
+                    peer_context.strategy_id,
+                )
+                .execute(&self.pool),
             )
-            .execute(&self.pool)
-            .await
             .unwrap();
 
             let mut strategy_context_after = (*strategy_context).to_owned();
@@ -659,13 +678,21 @@ impl StratSync for StratSyncService {
             return Err(Status::failed_precondition("Entry not found"));
         }
 
-        sqlx::query!(
-            r#"DELETE FROM public.strategy_player_entries
-                     WHERE id = $1"#,
-            id,
+        tokio::try_join!(
+            sqlx::query!(
+                r#"DELETE FROM public.strategy_player_entries
+                         WHERE id = $1"#,
+                id,
+            )
+            .execute(&self.pool),
+            sqlx::query!(
+                r#"UPDATE public.strategies
+                      SET id = $1
+                    WHERE id = $1"#,
+                peer_context.strategy_id,
+            )
+            .execute(&self.pool),
         )
-        .execute(&self.pool)
-        .await
         .unwrap();
 
         let mut strategy_context_after = (*strategy_context).to_owned();
@@ -742,24 +769,29 @@ impl StratSync for StratSyncService {
             .find(|player| player.id == id.to_string())
             .ok_or(Status::failed_precondition("Player not found"))?;
 
-        sqlx::query!(
-            r#"UPDATE public.strategy_players
-                  SET job = $1
-                WHERE id = $2"#,
-            job as Option<Job>,
-            id,
+        tokio::try_join!(
+            sqlx::query!(
+                r#"UPDATE public.strategy_players
+                      SET job = $1
+                    WHERE id = $2"#,
+                job as Option<Job>,
+                id,
+            )
+            .execute(&self.pool),
+            sqlx::query!(
+                r#"DELETE FROM public.strategy_player_entries
+                         WHERE player = $1"#,
+                id,
+            )
+            .execute(&self.pool),
+            sqlx::query!(
+                r#"UPDATE public.strategies
+                      SET id = $1
+                    WHERE id = $1"#,
+                peer_context.strategy_id,
+            )
+            .execute(&self.pool),
         )
-        .execute(&self.pool)
-        .await
-        .unwrap();
-
-        sqlx::query!(
-            r#"DELETE FROM public.strategy_player_entries
-                     WHERE player = $1"#,
-            id,
-        )
-        .execute(&self.pool)
-        .await
         .unwrap();
 
         let mut strategy_context_after = (*strategy_context).to_owned();
