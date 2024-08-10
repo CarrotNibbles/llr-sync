@@ -1,6 +1,8 @@
 use bcrypt::verify;
 use dotenvy_macro::dotenv;
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use moka::sync::Cache;
+use serde::{Deserialize, Serialize};
 use sqlx::{postgres::PgPoolOptions, types::Uuid, Pool, Postgres};
 use std::{str::FromStr, sync::Arc, time::Duration};
 use stratsync::{
@@ -19,7 +21,7 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{metadata::MetadataMap, transport::Server, Request, Response, Status};
 use tonic_web::GrpcWebLayer;
 use tower_http::{
     cors::{AllowHeaders, AllowOrigin, CorsLayer},
@@ -62,6 +64,7 @@ pub enum Job {
 pub struct PeerContext {
     pub strategy_id: Uuid,
     pub raid_id: Uuid,
+    pub is_author: bool,
     pub tx: Sender<Result<EventResponse, Status>>,
 }
 
@@ -109,6 +112,48 @@ fn parse_string_to_uuid(id: &String, message: impl Into<String>) -> Result<Uuid,
     Uuid::parse_str(id.as_str()).or(Err(Status::invalid_argument(message)))
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Claims {
+    aud: String,
+    exp: usize,
+    iat: usize,
+    iss: String,
+    sub: String,
+}
+
+fn get_user_id_from_authorization(metadata: &MetadataMap) -> Result<Option<Uuid>, Status> {
+    if let Some(authorization) = metadata.get("authorization") {
+        let authorization_as_string = authorization.to_str().or(Err(Status::invalid_argument(
+            "Invalid authorization header",
+        )))?;
+
+        let (token_type, token) = authorization_as_string
+            .split_once(" ")
+            .ok_or(Status::invalid_argument("Invalid authorization header"))?;
+
+        if token_type != "Bearer" {
+            return Err(Status::invalid_argument("Invalid token type"));
+        }
+
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_audience(&["authenticated"]);
+
+        let claims = decode::<Claims>(
+            token,
+            &DecodingKey::from_secret(dotenv!("JWT_SECRET").as_ref()),
+            &validation,
+        )
+        .or(Err(Status::invalid_argument("Invalid token")))?
+        .claims;
+
+        let user_id = parse_string_to_uuid(&claims.sub, "sub has an invalid format")?;
+
+        Ok(Some(user_id))
+    } else {
+        Ok(None)
+    }
+}
+
 #[tonic::async_trait]
 impl StratSync for StratSyncService {
     type EventStream = ReceiverStream<Result<EventResponse, Status>>;
@@ -117,44 +162,50 @@ impl StratSync for StratSyncService {
         &self,
         request: Request<SubscriptionRequest>,
     ) -> Result<Response<Self::EventStream>, Status> {
+        let metadata = request.metadata().to_owned();
         let payload = request.into_inner();
 
         let strategy_id =
             parse_string_to_uuid(&payload.strategy, "Strategy id has an invalid format")?;
 
-        let raid_id = sqlx::query!(
-            r#"SELECT raid
+        let row = sqlx::query!(
+            r#"SELECT raid, author
                  FROM public.strategies
                 WHERE id = $1"#,
             strategy_id
         )
         .fetch_one(&self.pool)
         .await
-        .or(Err(Status::permission_denied("Access denied to strategy")))?
-        .raid;
+        .or(Err(Status::permission_denied("Access denied to strategy")))?;
+
+        let raid_id = row.raid;
+
+        let is_author = get_user_id_from_authorization(&metadata)?
+            .map(|user_id| user_id == row.author)
+            .unwrap_or(false);
+
+        dbg!(&is_author);
 
         if !self.raid_cache.contains_key(&raid_id) {
-            let damages = sqlx::query_as!(
-                Damage,
-                r#"SELECT d.id, max_shared, num_targets
-                     FROM public.damages AS d
-                          JOIN public.gimmicks AS g
-                          ON d.gimmick = g.id
-                    WHERE g.raid = $1"#,
-                raid_id
+            let (damages, row) = tokio::try_join!(
+                sqlx::query_as!(
+                    Damage,
+                    r#"SELECT d.id, max_shared, num_targets
+                         FROM public.damages AS d
+                              JOIN public.gimmicks AS g
+                              ON d.gimmick = g.id
+                        WHERE g.raid = $1"#,
+                    raid_id
+                )
+                .fetch_all(&self.pool),
+                sqlx::query!(
+                    r#"SELECT duration, headcount
+                         FROM public.raids
+                        WHERE id = $1"#,
+                    raid_id
+                )
+                .fetch_one(&self.pool),
             )
-            .fetch_all(&self.pool)
-            .await
-            .unwrap();
-
-            let row = sqlx::query!(
-                r#"SELECT duration, headcount
-                     FROM public.raids
-                    WHERE id = $1"#,
-                raid_id
-            )
-            .fetch_one(&self.pool)
-            .await
             .unwrap();
 
             self.raid_cache.insert(
@@ -195,7 +246,18 @@ impl StratSync for StratSyncService {
                 strategy_context.elevated_peers.clone()
             } else {
                 vec![]
-            };
+            }
+            .iter()
+            .chain(
+                if is_author {
+                    vec![token.clone()]
+                } else {
+                    vec![]
+                }
+                .iter(),
+            )
+            .map(|el| el.to_owned())
+            .collect();
 
         let players: Vec<Player>;
         let damage_options: Vec<DamageOption>;
@@ -212,49 +274,47 @@ impl StratSync for StratSyncService {
             self.strategy_context
                 .insert(strategy_id, Arc::new(strategy_context))
         } else {
-            players = sqlx::query_as!(
-                Player,
-                r#"  WITH ordered_table AS (SELECT *
-                                            FROM public.strategy_players
-                                            ORDER BY "order")
-                   SELECT id, job AS "job: String", "order"
-                     FROM ordered_table
-                    WHERE strategy = $1"#,
-                strategy_id
+            let damage_options_raw: Vec<_>;
+            (players, damage_options_raw, entries) = tokio::try_join!(
+                sqlx::query_as!(
+                    Player,
+                    r#"  WITH ordered_table AS (SELECT *
+                                                FROM public.strategy_players
+                                                ORDER BY "order")
+                       SELECT id, job AS "job: String", "order"
+                         FROM ordered_table
+                        WHERE strategy = $1"#,
+                    strategy_id
+                )
+                .fetch_all(&self.pool),
+                sqlx::query!(
+                    r#"SELECT damage, num_shared, primary_target
+                         FROM public.strategy_damage_options
+                        WHERE strategy = $1"#,
+                    strategy_id
+                )
+                .fetch_all(&self.pool),
+                sqlx::query_as!(
+                    Entry,
+                    r#"SELECT e.id AS id, player, action, use_at
+                         FROM public.strategy_player_entries AS e
+                              JOIN public.strategy_players AS p
+                              ON e.player = p.id
+                        WHERE p.strategy = $1"#,
+                    strategy_id
+                )
+                .fetch_all(&self.pool),
             )
-            .fetch_all(&self.pool)
-            .await
             .unwrap();
 
-            damage_options = sqlx::query!(
-                r#"SELECT damage, num_shared, primary_target
-                     FROM public.strategy_damage_options
-                    WHERE strategy = $1"#,
-                strategy_id
-            )
-            .fetch_all(&self.pool)
-            .await
-            .unwrap()
-            .iter()
-            .map(|record| DamageOption {
-                damage: record.damage.to_string(),
-                num_shared: record.num_shared,
-                primary_target: record.primary_target.map(|s| s.to_string()),
-            })
-            .collect();
-
-            entries = sqlx::query_as!(
-                Entry,
-                r#"SELECT e.id AS id, player, action, use_at
-                     FROM public.strategy_player_entries AS e
-                          JOIN public.strategy_players AS p
-                          ON e.player = p.id
-                    WHERE p.strategy = $1"#,
-                strategy_id
-            )
-            .fetch_all(&self.pool)
-            .await
-            .unwrap();
+            damage_options = damage_options_raw
+                .iter()
+                .map(|record| DamageOption {
+                    damage: record.damage.to_string(),
+                    num_shared: record.num_shared,
+                    primary_target: record.primary_target.map(|s| s.to_string()),
+                })
+                .collect();
 
             self.strategy_context.insert(
                 strategy_id,
@@ -275,6 +335,7 @@ impl StratSync for StratSyncService {
             Arc::new(PeerContext {
                 strategy_id,
                 raid_id,
+                is_author,
                 tx: tx.clone(),
             }),
         );
@@ -313,16 +374,21 @@ impl StratSync for StratSyncService {
             return Err(Status::failed_precondition("Already elevated"));
         }
 
-        let strategy_password = sqlx::query!(
-            r#"SELECT password
+        let row = sqlx::query!(
+            r#"SELECT password, is_editable
                  FROM public.strategies
                 WHERE id = $1"#,
             peer_context.strategy_id
         )
         .fetch_one(&self.pool)
         .await
-        .unwrap()
-        .password;
+        .unwrap();
+        let strategy_password = row.password;
+        let is_strategy_editable = row.is_editable;
+
+        if !is_strategy_editable {
+            return Err(Status::permission_denied("Strategy is not editable"));
+        }
 
         if !verify(payload.password.as_str(), strategy_password.as_str()).unwrap_or(false) {
             return Err(Status::permission_denied("Invalid password"));

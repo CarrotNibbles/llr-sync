@@ -30,8 +30,11 @@ jobs:
             cargo-
 
       - run: |
+          echo "DATABASE_URL=\"${{ secrets.DATABASE_URL }}\"" >> .env
+          echo "JWT_SECRET=\"${{ secrets.JWT_SECRET }}\"" >> .env
+
+      - run: |
           cargo install cross --git https://github.com/cross-rs/cross
-          echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> .env
           cross build --release --target x86_64-unknown-linux-musl
 
       - uses: docker/login-action@v2
