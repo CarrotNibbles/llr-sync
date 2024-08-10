@@ -34,7 +34,7 @@ jobs:
           echo "JWT_SECRET=\"${{ secrets.JWT_SECRET }}\"" >> .env
 
       - run: |
-          cargo install cross --git https://github.com/cross-rs/cross
+          cross -V || cargo install cross --git https://github.com/cross-rs/cross
           cross build --release --target x86_64-unknown-linux-musl
 
       - uses: docker/login-action@v2
