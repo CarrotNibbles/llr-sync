@@ -8,9 +8,10 @@ use std::{str::FromStr, sync::Arc, time::Duration};
 use stratsync::{
     event_response::Event,
     strat_sync_server::{StratSync, StratSyncServer},
-    DamageOption, DeleteEntryEvent, DeleteEntryRequest, ElevationRequest, Entry, EventResponse,
-    InitializationEvent, Player, SubscriptionRequest, UpdatePlayerJobEvent, UpdatePlayerJobRequest,
-    UpsertDamageOptionEvent, UpsertDamageOptionRequest, UpsertEntryEvent, UpsertEntryRequest,
+    ClearOtherSessionsRequest, DamageOption, DeleteEntryEvent, DeleteEntryRequest,
+    ElevationRequest, Entry, EventResponse, InitializationEvent, Player, SubscriptionRequest,
+    UpdatePlayerJobEvent, UpdatePlayerJobRequest, UpsertDamageOptionEvent,
+    UpsertDamageOptionRequest, UpsertEntryEvent, UpsertEntryRequest,
 };
 use strum_macros::EnumString;
 use tokio::{
@@ -354,12 +355,15 @@ impl StratSync for StratSyncService {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
-    async fn clear_other_sessions(&self, request: Request<string>) -> Result<Response<()>, Status> {
-        let token = request.into_inner();
+    async fn clear_other_sessions(
+        &self,
+        request: Request<ClearOtherSessionsRequest>,
+    ) -> Result<Response<()>, Status> {
+        let payload = request.into_inner();
 
         let peer_context = self
             .peer_context
-            .get(&token)
+            .get(&payload.token)
             .ok_or(Status::unauthenticated("Token not found"))?;
 
         if !peer_context.is_author {
@@ -377,7 +381,7 @@ impl StratSync for StratSyncService {
             .ok_or(Status::unauthenticated("Strategy not opened"))?;
 
         for peer in &strategy_context.peers {
-            if &token == peer {
+            if &payload.token == peer {
                 continue;
             }
 
@@ -1000,6 +1004,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     strategy_context_cloned.invalidate(&v.strategy_id);
                 } else {
                     context.peers = peers_after;
+                    context.elevated_peers = elevated_peers_after;
                     strategy_context_cloned.insert(v.strategy_id, Arc::new(context));
                 }
             })
