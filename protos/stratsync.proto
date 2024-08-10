@@ -6,6 +6,7 @@ import "google/protobuf/empty.proto";
 
 service StratSync {
     rpc Event (SubscriptionRequest) returns (stream EventResponse);
+    rpc ClearOtherSessions (string) returns (google.protobuf.Empty);
     rpc Elevate (ElevationRequest) returns (google.protobuf.Empty);
     rpc UpsertDamageOption (UpsertDamageOptionRequest) returns (google.protobuf.Empty);
     rpc UpsertEntry (UpsertEntryRequest) returns (google.protobuf.Empty);

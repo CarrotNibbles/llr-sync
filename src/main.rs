@@ -354,6 +354,39 @@ impl StratSync for StratSyncService {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
+    async fn clear_other_sessions(&self, request: Request<string>) -> Result<Response<()>, Status> {
+        let token = request.into_inner();
+
+        let peer_context = self
+            .peer_context
+            .get(&token)
+            .ok_or(Status::unauthenticated("Token not found"))?;
+
+        if !peer_context.is_author {
+            return Err(Status::permission_denied(
+                "Only the author can clear other sessions",
+            ));
+        }
+
+        let lock = self.strategy_lock.get(&peer_context.strategy_id).unwrap();
+        let _guard = lock.lock().await;
+
+        let strategy_context = self
+            .strategy_context
+            .get(&peer_context.strategy_id)
+            .ok_or(Status::unauthenticated("Strategy not opened"))?;
+
+        for peer in &strategy_context.peers {
+            if &token == peer {
+                continue;
+            }
+
+            self.peer_context.invalidate(peer);
+        }
+
+        Ok(Response::new(()))
+    }
+
     async fn elevate(&self, request: Request<ElevationRequest>) -> Result<Response<()>, Status> {
         let payload = request.into_inner();
 
@@ -950,6 +983,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let peers_after: Vec<_> = context
                     .peers
+                    .iter()
+                    .filter(|&peer_id| *peer_id != *k)
+                    .map(|peer_id| peer_id.to_owned())
+                    .collect();
+
+                let elevated_peers_after: Vec<_> = context
+                    .elevated_peers
                     .iter()
                     .filter(|&peer_id| *peer_id != *k)
                     .map(|peer_id| peer_id.to_owned())
