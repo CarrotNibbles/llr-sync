@@ -170,7 +170,7 @@ impl StratSync for StratSyncService {
             parse_string_to_uuid(&payload.strategy, "Strategy id has an invalid format")?;
 
         let row = sqlx::query!(
-            r#"SELECT raid, author
+            r#"SELECT raid, author, is_public
                  FROM public.strategies
                 WHERE id = $1"#,
             strategy_id
@@ -185,7 +185,9 @@ impl StratSync for StratSyncService {
             .map(|user_id| user_id == row.author)
             .unwrap_or(false);
 
-        dbg!(&is_author);
+        if !row.is_public && !is_author {
+            return Err(Status::permission_denied("Access denied to strategy"));
+        }
 
         if !self.raid_cache.contains_key(&raid_id) {
             let (damages, row) = tokio::try_join!(
