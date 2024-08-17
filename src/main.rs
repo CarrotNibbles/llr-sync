@@ -269,6 +269,7 @@ impl StratSync for StratSyncService {
             let mut strategy_context =
                 (*self.strategy_context.get(&strategy_id).unwrap()).to_owned();
             strategy_context.peers = peers;
+            strategy_context.elevated_peers = elevated_peers;
 
             players = strategy_context.players.clone();
             damage_options = strategy_context.damage_options.clone();
