@@ -10,10 +10,7 @@ impl StratSyncService {
     ) -> Result<Response<()>, Status> {
         let payload = request.into_inner();
 
-        let peer_context = self
-            .peer_context
-            .get(&payload.token)
-            .ok_or(Status::unauthenticated("Token not found"))?;
+        let (peer_context, strategy_context, lock) = self.open_strategy(&payload.token, false)?;
 
         if !peer_context.is_author {
             return Err(Status::permission_denied(
@@ -21,13 +18,7 @@ impl StratSyncService {
             ));
         }
 
-        let lock = self.strategy_lock.get(&peer_context.strategy_id).unwrap();
         let _guard = lock.lock().await;
-
-        let strategy_context = self
-            .strategy_context
-            .get(&peer_context.strategy_id)
-            .ok_or(Status::unauthenticated("Strategy not opened"))?;
 
         for peer in &strategy_context.peers {
             if &payload.token == peer {

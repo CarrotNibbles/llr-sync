@@ -1,8 +1,16 @@
+use std::sync::Arc;
+
 use dotenvy_macro::dotenv;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Uuid;
+use tokio::{sync::Mutex, task::JoinSet};
 use tonic::{metadata::MetadataMap, Status};
+
+use crate::{
+    protos::stratsync::{event_response, EventResponse},
+    types::*,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
@@ -47,5 +55,62 @@ pub fn get_user_id_from_authorization(metadata: &MetadataMap) -> Result<Option<U
         Ok(Some(user_id))
     } else {
         Ok(None)
+    }
+}
+
+impl StratSyncService {
+    pub fn open_strategy(
+        &self,
+        token: &String,
+        check_elevated: bool,
+    ) -> Result<(Arc<PeerContext>, Arc<StrategyContext>, Arc<Mutex<()>>), Status> {
+        let peer_context = self
+            .peer_context
+            .get(token)
+            .ok_or(Status::unauthenticated("Token not found"))?;
+
+        let strategy_context = self
+            .strategy_context
+            .get(&peer_context.strategy_id)
+            .ok_or(Status::unauthenticated("Strategy not opened"))?;
+
+        if check_elevated && strategy_context.elevated_peers.iter().find(|&s| s == token) == None {
+            return Err(Status::permission_denied("Not elevated"));
+        }
+
+        let lock = self.strategy_lock.get(&peer_context.strategy_id).unwrap();
+
+        Ok((peer_context, strategy_context, lock))
+    }
+
+    pub async fn broadcast(
+        &self,
+        token: &String,
+        strategy_context: &Arc<StrategyContext>,
+        event: event_response::Event,
+    ) {
+        let mut tasks = JoinSet::new();
+
+        for peer in &strategy_context.peers {
+            if token == peer {
+                continue;
+            }
+
+            let tx = self.peer_context.get(peer).unwrap().tx.clone();
+            let event = event.clone();
+
+            if tx.is_closed() {
+                self.peer_context.invalidate(peer);
+                continue;
+            }
+
+            tasks.spawn(async move {
+                tx.send(Ok(EventResponse { event: Some(event) }))
+                    .await
+                    .unwrap()
+            });
+        }
+
+        while let Some(_) = tasks.join_next().await {}
     }
 }

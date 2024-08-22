@@ -4,7 +4,6 @@ use crate::protos::stratsync::*;
 use crate::types::*;
 use crate::utils;
 
-use tokio::task::JoinSet;
 use tonic::{Request, Response, Status};
 
 impl StratSyncService {
@@ -14,28 +13,10 @@ impl StratSyncService {
     ) -> Result<Response<()>, Status> {
         let payload = request.into_inner();
 
-        let peer_context = self
-            .peer_context
-            .get(&payload.token)
-            .ok_or(Status::unauthenticated("Token not found"))?;
-
-        let lock = self.strategy_lock.get(&peer_context.strategy_id).unwrap();
+        let (peer_context, strategy_context, lock) = self.open_strategy(&payload.token, true)?;
         let _guard = lock.lock().await;
 
-        let strategy_context = self
-            .strategy_context
-            .get(&peer_context.strategy_id)
-            .ok_or(Status::unauthenticated("Strategy not opened"))?;
         let raid = self.raid_cache.get(&strategy_context.raid_id).unwrap();
-
-        if strategy_context
-            .elevated_peers
-            .iter()
-            .find(|&s| s == &payload.token)
-            == None
-        {
-            return Err(Status::permission_denied("Not elevated"));
-        }
 
         let damage_option = payload
             .damage_option
@@ -114,30 +95,14 @@ impl StratSyncService {
         self.strategy_context
             .insert(peer_context.strategy_id, Arc::new(strategy_context_after));
 
-        let mut messages = JoinSet::new();
-        for peer in &strategy_context.peers {
-            if &payload.token == peer {
-                continue;
-            }
-
-            let tx = self.peer_context.get(peer).unwrap().tx.clone();
-            let event = event_response::Event::UpsertDamageOptionEvent(UpsertDamageOptionEvent {
-                damage_option: Some(damage_option.clone()),
-            });
-
-            if tx.is_closed() {
-                self.peer_context.invalidate(peer);
-                continue;
-            }
-
-            messages.spawn(async move {
-                tx.send(Ok(EventResponse { event: Some(event) }))
-                    .await
-                    .unwrap()
-            });
-        }
-
-        while let Some(_) = messages.join_next().await {}
+        self.broadcast(
+            &payload.token,
+            &strategy_context,
+            event_response::Event::UpsertDamageOptionEvent(UpsertDamageOptionEvent {
+                damage_option: Some(damage_option),
+            }),
+        )
+        .await;
 
         Ok(Response::new(()))
     }
