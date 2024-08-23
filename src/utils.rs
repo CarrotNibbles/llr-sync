@@ -25,7 +25,7 @@ pub fn parse_string_to_uuid(id: &String, message: impl Into<String>) -> Result<U
     Uuid::parse_str(id.as_str()).or(Err(Status::invalid_argument(message)))
 }
 
-pub fn get_user_id_from_authorization(metadata: &MetadataMap) -> Result<Option<Uuid>, Status> {
+pub fn parse_authorization_header(metadata: &MetadataMap) -> Result<Option<Uuid>, Status> {
     if let Some(authorization) = metadata.get("authorization") {
         let authorization_as_string = authorization.to_str().or(Err(Status::invalid_argument(
             "Invalid authorization header",
