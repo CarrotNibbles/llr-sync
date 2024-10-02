@@ -10,7 +10,7 @@ impl StratSyncService {
     ) -> Result<Response<()>, Status> {
         let payload = request.into_inner();
 
-        let (peer_context, strategy_context, lock) = self.open_strategy(&payload.token, false)?;
+        let (peer_context, strategy_context, lock) = self.open_strategy(&payload.token, true)?;
 
         if !peer_context.is_author {
             return Err(Status::permission_denied(

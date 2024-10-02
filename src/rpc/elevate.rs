@@ -12,7 +12,7 @@ impl StratSyncService {
     ) -> Result<Response<()>, Status> {
         let payload = request.into_inner();
 
-        let (peer_context, strategy_context, lock) = self.open_strategy(&payload.token, true)?;
+        let (peer_context, strategy_context, lock) = self.open_strategy(&payload.token, false)?;
         let _guard = lock.lock().await;
 
         if strategy_context.elevated_peers.contains(&payload.token) {
