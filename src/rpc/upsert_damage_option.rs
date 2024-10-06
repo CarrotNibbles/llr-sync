@@ -81,9 +81,7 @@ impl StratSyncService {
             )
             .execute(&self.pool),
             sqlx::query!(
-                r#"UPDATE public.strategies
-                          SET id = $1
-                        WHERE id = $1"#,
+                r#"SELECT update_modified_at ($1)"#,
                 peer_context.strategy_id,
             )
             .execute(&self.pool),
