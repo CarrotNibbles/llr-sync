@@ -49,11 +49,10 @@ impl StratSyncService {
         }
 
         if let Some(s) = primary_target_id {
-            if strategy_context
+            if !strategy_context
                 .players
                 .iter()
-                .find(|player| player.id == s.to_string())
-                == None
+                .any(|player| player.id == s.to_string())
             {
                 return Err(Status::failed_precondition("Primary target not found"));
             }
@@ -63,7 +62,7 @@ impl StratSyncService {
             .damage_options
             .iter()
             .filter(|damage_option| damage_option.damage != damage_id.to_string())
-            .chain(vec![damage_option.clone()].iter())
+            .chain([damage_option.clone()].iter())
             .map(|damage_option| damage_option.to_owned())
             .collect();
 

@@ -21,8 +21,8 @@ struct Claims {
     pub sub: String,
 }
 
-pub fn parse_string_to_uuid(id: &String, message: impl Into<String>) -> Result<Uuid, Status> {
-    Uuid::parse_str(id.as_str()).or(Err(Status::invalid_argument(message)))
+pub fn parse_string_to_uuid(id: &str, message: impl Into<String>) -> Result<Uuid, Status> {
+    Uuid::parse_str(id).or(Err(Status::invalid_argument(message)))
 }
 
 pub fn parse_authorization_header(metadata: &MetadataMap) -> Result<Option<Uuid>, Status> {
@@ -58,12 +58,14 @@ pub fn parse_authorization_header(metadata: &MetadataMap) -> Result<Option<Uuid>
     }
 }
 
+type InitializationContext = (Arc<PeerContext>, Arc<StrategyContext>, Arc<Mutex<()>>);
+
 impl StratSyncService {
     pub fn open_strategy(
         &self,
         token: &String,
         check_elevated: bool,
-    ) -> Result<(Arc<PeerContext>, Arc<StrategyContext>, Arc<Mutex<()>>), Status> {
+    ) -> Result<InitializationContext, Status> {
         let peer_context = self
             .peer_context
             .get(token)
@@ -74,7 +76,7 @@ impl StratSyncService {
             .get(&peer_context.strategy_id)
             .ok_or(Status::unauthenticated("Strategy not opened"))?;
 
-        if check_elevated && strategy_context.elevated_peers.iter().find(|&s| s == token) == None {
+        if check_elevated && !strategy_context.elevated_peers.iter().any(|s| s == token) {
             return Err(Status::permission_denied("Not elevated"));
         }
 
@@ -111,6 +113,6 @@ impl StratSyncService {
             });
         }
 
-        while let Some(_) = tasks.join_next().await {}
+        while (tasks.join_next().await).is_some() {}
     }
 }

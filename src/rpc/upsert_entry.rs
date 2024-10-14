@@ -79,7 +79,7 @@ impl StratSyncService {
             (0..column_covering.len() - 1).any(|i| column_covering[i].1 > column_covering[i + 1].0);
 
         if collides {
-            let event = if let Some(_) = original_entry {
+            let event = if original_entry.is_some() {
                 event_response::Event::UpsertEntryEvent(UpsertEntryEvent {
                     entry: original_entry,
                 })

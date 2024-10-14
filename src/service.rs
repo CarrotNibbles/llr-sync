@@ -116,7 +116,7 @@ pub async fn build_stratsync() -> StratSyncServer<StratSyncService> {
                 .map(|peer_id| peer_id.to_owned())
                 .collect();
 
-            if peers_after.len() == 0 {
+            if peers_after.is_empty() {
                 strategy_lock_cloned.invalidate(&v.strategy_id);
                 strategy_context_cloned.invalidate(&v.strategy_id);
             } else {
