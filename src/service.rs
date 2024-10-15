@@ -100,6 +100,16 @@ pub async fn build_stratsync() -> StratSyncServer<StratSyncService> {
     let peer_context: Cache<String, Arc<PeerContext>> = Cache::builder()
         .time_to_idle(Duration::from_secs(12 * 60 * 60))
         .eviction_listener(move |k: Arc<String>, v: Arc<PeerContext>, _| {
+            if !v.tx.is_closed() {
+                let cloned_tx = v.tx.clone();
+                tokio::spawn(async move {
+                    cloned_tx
+                        .send(Err(Status::aborted("Session expired")))
+                        .await
+                        .ok();
+                });
+            }
+
             let mut context = (*strategy_context_cloned.get(&v.strategy_id).unwrap()).clone();
 
             let peers_after: Vec<_> = context
