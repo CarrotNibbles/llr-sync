@@ -3,6 +3,14 @@ name: Build and Push Image
 on:
   push:
     branches: ["main"]
+    paths:
+      - src/**
+      - protos/**
+      - Cargo.toml
+      - Cargo.lock
+      - Dockerfile
+      - build.rs
+      - .github/workflows/build.yml
   workflow_dispatch:
 
 env:
