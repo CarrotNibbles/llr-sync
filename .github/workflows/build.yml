@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  DOCKER_TAG: ghcr.io/${{ github.repository }}:latest
+  DOCKER_TAG: ghcr.io/carrotnibbles/llr-sync:latest
 
 jobs:
   build:
