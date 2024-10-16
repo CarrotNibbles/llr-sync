@@ -40,7 +40,13 @@ jobs:
           key: docker-${{ runner.os }}-${{ hashFiles('**/Dockerfile') }}
 
       - run: |
+          cargo sqlx -V || cargo install sqlx-cli --no-default-features --features postgres
           cross -V || cargo install cross --git https://github.com/cross-rs/cross
+
+      - run: |
+          echo "DATABASE_URL=\"${{ secrets.DATABASE_URL }}\"" > .env
+          cargo sqlx prepare
+          rm .env
           cross build --release --target x86_64-unknown-linux-musl
 
       - uses: docker/setup-buildx-action@v3
