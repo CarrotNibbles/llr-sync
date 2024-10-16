@@ -1,6 +1,5 @@
-use std::sync::Arc;
+use std::{env, sync::Arc};
 
-use dotenvy_macro::dotenv;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Uuid;
@@ -26,6 +25,8 @@ pub fn parse_string_to_uuid(id: &str, message: impl Into<String>) -> Result<Uuid
 }
 
 pub fn parse_authorization_header(metadata: &MetadataMap) -> Result<Option<Uuid>, Status> {
+    let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set on the environment");
+
     if let Some(authorization) = metadata.get("authorization") {
         let authorization_as_string = authorization.to_str().or(Err(Status::invalid_argument(
             "Invalid authorization header",
@@ -44,7 +45,7 @@ pub fn parse_authorization_header(metadata: &MetadataMap) -> Result<Option<Uuid>
 
         let claims = decode::<Claims>(
             token,
-            &DecodingKey::from_secret(dotenv!("JWT_SECRET").as_ref()),
+            &DecodingKey::from_secret(jwt_secret.as_ref()),
             &validation,
         )
         .or(Err(Status::invalid_argument("Invalid token")))?

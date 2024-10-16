@@ -5,6 +5,7 @@ pub mod protos;
 pub mod types;
 pub mod utils;
 
+use dotenvy::dotenv;
 use tonic::transport::Server;
 use tonic_web::GrpcWebLayer;
 use tower_http::{
@@ -14,10 +15,10 @@ use tower_http::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let address = "[::]:8080".parse().unwrap();
-
+    dotenv().ok();
     tracing_subscriber::fmt::init();
 
+    let address = "[::]:8080".parse().unwrap();
     Server::builder()
         .accept_http1(true)
         .layer(TraceLayer::new_for_http())

@@ -1,11 +1,9 @@
 use crate::protos::stratsync::*;
 use crate::types::*;
 
-use dotenvy_macro::dotenv;
 use moka::sync::Cache;
 use sqlx::{postgres::PgPoolOptions, types::Uuid};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{env, sync::Arc, time::Duration};
 use strat_sync_server::{StratSync, StratSyncServer};
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
@@ -63,9 +61,12 @@ impl StratSync for StratSyncService {
 }
 
 pub async fn build_stratsync() -> StratSyncServer<StratSyncService> {
+    let database_url =
+        env::var("DATABASE_URL").expect("DATABASE_URL must be set on the environment");
+
     let pool = PgPoolOptions::new()
         .max_connections(32)
-        .connect(dotenv!("DATABASE_URL"))
+        .connect(&database_url)
         .await
         .expect("Unable to connect to database");
 
