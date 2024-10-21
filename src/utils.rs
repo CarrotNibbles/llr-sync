@@ -3,7 +3,7 @@ use std::{env, sync::Arc};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Uuid;
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::task::JoinSet;
 use tonic::{metadata::MetadataMap, Status};
 
 use crate::{
@@ -59,33 +59,44 @@ pub fn parse_authorization_header(metadata: &MetadataMap) -> Result<Option<Uuid>
     }
 }
 
-type InitializationContext = (Arc<PeerContext>, Arc<StrategyContext>, Arc<Mutex<()>>);
-
-impl StratSyncService {
-    pub fn open_strategy(
-        &self,
-        token: &String,
-        check_elevated: bool,
-    ) -> Result<InitializationContext, Status> {
-        let peer_context = self
+macro_rules! open_strategy {
+    ($self: ident, $token: expr, $peer_context:ident, $lock:ident, $guard:ident, $strategy_context:ident) => {
+        let $peer_context = $self
             .peer_context
-            .get(token)
+            .get($token)
             .ok_or(Status::unauthenticated("Token not found"))?;
-
-        let strategy_context = self
+        let $lock = $self.strategy_lock.get(&$peer_context.strategy_id).unwrap();
+        let $guard = $lock.lock().await;
+        let $strategy_context = $self
             .strategy_context
-            .get(&peer_context.strategy_id)
+            .get(&$peer_context.strategy_id)
+            .ok_or(Status::unauthenticated("Strategy not opened"))?;
+    };
+}
+
+macro_rules! open_strategy_elevated {
+    ($self: ident, $token: expr, $peer_context:ident, $lock:ident, $guard:ident, $strategy_context:ident) => {
+        let $peer_context = $self
+            .peer_context
+            .get($token)
+            .ok_or(Status::unauthenticated("Token not found"))?;
+        let $lock = $self.strategy_lock.get(&$peer_context.strategy_id).unwrap();
+        let $guard = $lock.lock().await;
+        let $strategy_context = $self
+            .strategy_context
+            .get(&$peer_context.strategy_id)
             .ok_or(Status::unauthenticated("Strategy not opened"))?;
 
-        if check_elevated && !strategy_context.elevated_peers.iter().any(|s| s == token) {
+        if !$strategy_context.elevated_peers.iter().any(|s| s == $token) {
             return Err(Status::permission_denied("Not elevated"));
         }
+    };
+}
 
-        let lock = self.strategy_lock.get(&peer_context.strategy_id).unwrap();
+pub(crate) use open_strategy;
+pub(crate) use open_strategy_elevated;
 
-        Ok((peer_context, strategy_context, lock))
-    }
-
+impl StratSyncService {
     pub async fn broadcast(
         &self,
         token: &String,
@@ -99,7 +110,12 @@ impl StratSyncService {
                 continue;
             }
 
-            let tx = self.peer_context.get(peer).unwrap().tx.clone();
+            let opt_peer_context = self.peer_context.get(peer);
+            if opt_peer_context.is_none() {
+                continue;
+            }
+
+            let tx = opt_peer_context.unwrap().tx.clone();
             let event = event.clone();
 
             if tx.is_closed() {

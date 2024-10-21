@@ -1,5 +1,6 @@
 use crate::protos::stratsync::*;
 use crate::types::*;
+use crate::utils;
 
 use tonic::{Request, Response, Status};
 
@@ -10,7 +11,14 @@ impl StratSyncService {
     ) -> Result<Response<()>, Status> {
         let payload = request.into_inner();
 
-        let (peer_context, strategy_context, lock) = self.open_strategy(&payload.token, true)?;
+        utils::open_strategy_elevated!(
+            self,
+            &payload.token,
+            peer_context,
+            lock,
+            _guard,
+            strategy_context
+        );
 
         if !peer_context.is_author {
             return Err(Status::permission_denied(

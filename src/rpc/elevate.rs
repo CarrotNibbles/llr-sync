@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::protos::stratsync::*;
 use crate::types::*;
+use crate::utils;
 
 use tonic::{Request, Response, Status};
 
@@ -12,8 +13,14 @@ impl StratSyncService {
     ) -> Result<Response<()>, Status> {
         let payload = request.into_inner();
 
-        let (peer_context, strategy_context, lock) = self.open_strategy(&payload.token, false)?;
-        let _guard = lock.lock().await;
+        utils::open_strategy!(
+            self,
+            &payload.token,
+            peer_context,
+            lock,
+            _guard,
+            strategy_context
+        );
 
         if strategy_context.elevated_peers.contains(&payload.token) {
             return Err(Status::failed_precondition("Already elevated"));

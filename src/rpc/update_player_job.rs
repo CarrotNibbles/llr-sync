@@ -14,8 +14,14 @@ impl StratSyncService {
     ) -> Result<Response<()>, Status> {
         let payload = request.into_inner();
 
-        let (peer_context, strategy_context, lock) = self.open_strategy(&payload.token, true)?;
-        let _guard = lock.lock().await;
+        utils::open_strategy_elevated!(
+            self,
+            &payload.token,
+            peer_context,
+            lock,
+            _guard,
+            strategy_context
+        );
 
         let job_as_string = payload.job.clone();
 
