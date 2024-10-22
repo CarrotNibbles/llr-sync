@@ -27,7 +27,7 @@ impl StratSyncService {
         )
         .fetch_one(&self.pool)
         .await
-        .or(Err(Status::permission_denied("Access denied to strategy")))?;
+        .map_err(|_| Status::permission_denied("Access denied to strategy"))?;
 
         let raid_id = row.raid;
 
@@ -82,35 +82,31 @@ impl StratSyncService {
 
         let token = Uuid::new_v4().to_string();
 
-        let peers: Vec<String> =
-            if let Some(strategy_context) = self.strategy_context.get(&strategy_id) {
-                strategy_context
-                    .peers
-                    .iter()
-                    .chain([token.clone()].iter())
-                    .map(|el| el.to_owned())
-                    .collect()
-            } else {
-                vec![token.clone()]
-            };
+        let peers: Vec<String> = match self.strategy_context.get(&strategy_id) {
+            Some(strategy_context) => strategy_context
+                .peers
+                .iter()
+                .chain([token.clone()].iter())
+                .map(|el| el.to_owned())
+                .collect(),
+            None => vec![token.clone()],
+        };
 
-        let elevated_peers: Vec<String> =
-            if let Some(strategy_context) = self.strategy_context.get(&strategy_id) {
-                strategy_context.elevated_peers.clone()
+        let elevated_peers: Vec<String> = match self.strategy_context.get(&strategy_id) {
+            Some(strategy_context) => strategy_context.elevated_peers.clone(),
+            None => vec![],
+        }
+        .iter()
+        .chain(
+            if is_author {
+                vec![token.clone()]
             } else {
                 vec![]
             }
-            .iter()
-            .chain(
-                if is_author {
-                    vec![token.clone()]
-                } else {
-                    vec![]
-                }
-                .iter(),
-            )
-            .map(|el| el.to_owned())
-            .collect();
+            .iter(),
+        )
+        .map(|el| el.to_owned())
+        .collect();
 
         let players: Vec<Player>;
         let damage_options: Vec<DamageOption>;

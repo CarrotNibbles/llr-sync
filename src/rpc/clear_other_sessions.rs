@@ -26,8 +26,6 @@ impl StratSyncService {
             ));
         }
 
-        let _guard = lock.lock().await;
-
         for peer in &strategy_context.peers {
             if &payload.token == peer {
                 continue;

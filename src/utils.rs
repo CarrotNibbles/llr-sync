@@ -1,8 +1,10 @@
-use std::{env, sync::Arc};
-
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Uuid;
+use std::{
+    env,
+    sync::{Arc, OnceLock},
+};
 use tokio::task::JoinSet;
 use tonic::{metadata::MetadataMap, Status};
 
@@ -21,42 +23,52 @@ struct Claims {
 }
 
 pub fn parse_string_to_uuid(id: &str, message: impl Into<String>) -> Result<Uuid, Status> {
-    Uuid::parse_str(id).or(Err(Status::invalid_argument(message)))
+    Uuid::parse_str(id).map_err(|_| Status::invalid_argument(message))
 }
 
+static DECODING_KEY: OnceLock<DecodingKey> = OnceLock::new();
+
 pub fn parse_authorization_header(metadata: &MetadataMap) -> Result<Option<Uuid>, Status> {
-    let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set on the environment");
+    let decoding_key = DECODING_KEY.get_or_init(|| {
+        let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set in the environment");
+        DecodingKey::from_secret(jwt_secret.as_bytes())
+    });
 
-    if let Some(authorization) = metadata.get("authorization") {
-        let authorization_as_string = authorization.to_str().or(Err(Status::invalid_argument(
-            "Invalid authorization header",
-        )))?;
+    let authorization = match metadata.get("authorization") {
+        Some(value) => value,
+        None => return Ok(None),
+    };
 
-        let (token_type, token) = authorization_as_string
-            .split_once(" ")
-            .ok_or(Status::invalid_argument("Invalid authorization header"))?;
+    let authorization_as_string = authorization
+        .to_str()
+        .map_err(|_| Status::invalid_argument("Invalid authorization header"))?;
 
-        if token_type != "Bearer" {
-            return Err(Status::invalid_argument("Invalid token type"));
-        }
+    let (token_type, token) = authorization_as_string
+        .split_once(" ")
+        .ok_or_else(|| Status::invalid_argument("Authorization header is malformed"))?;
 
-        let mut validation = Validation::new(Algorithm::HS256);
-        validation.set_audience(&["authenticated"]);
+    if token_type != "Bearer" {
+        return Err(Status::invalid_argument("Authorization token must be of type 'Bearer'"));
+    }
 
-        let claims = decode::<Claims>(
-            token,
-            &DecodingKey::from_secret(jwt_secret.as_ref()),
-            &validation,
-        )
-        .or(Err(Status::invalid_argument("Invalid token")))?
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.set_audience(&["authenticated"]);
+
+    let claims = decode::<Claims>(token, decoding_key, &validation)
+        .map_err(|err| match err.kind() {
+            jsonwebtoken::errors::ErrorKind::InvalidToken => {
+                Status::unauthenticated("Invalid token")
+            }
+            jsonwebtoken::errors::ErrorKind::ExpiredSignature => {
+                Status::unauthenticated("Token has expired")
+            }
+            _ => Status::unauthenticated("Failed to decode token"),
+        })?
         .claims;
 
-        let user_id = parse_string_to_uuid(&claims.sub, "sub has an invalid format")?;
+    let user_id = parse_string_to_uuid(&claims.sub, "sub claim has an invalid format")?;
 
-        Ok(Some(user_id))
-    } else {
-        Ok(None)
-    }
+    Ok(Some(user_id))
 }
 
 macro_rules! open_strategy {
@@ -64,31 +76,34 @@ macro_rules! open_strategy {
         let $peer_context = $self
             .peer_context
             .get($token)
-            .ok_or(Status::unauthenticated("Token not found"))?;
-        let $lock = $self.strategy_lock.get(&$peer_context.strategy_id).unwrap();
+            .ok_or_else(|| Status::unauthenticated("Invalid token or peer context not found"))?;
+        let $lock = $self
+            .strategy_lock
+            .get(&$peer_context.strategy_id)
+            .ok_or_else(|| Status::internal("Strategy lock not found"))?;
         let $guard = $lock.lock().await;
         let $strategy_context = $self
             .strategy_context
             .get(&$peer_context.strategy_id)
-            .ok_or(Status::unauthenticated("Strategy not opened"))?;
+            .ok_or_else(|| Status::unauthenticated("Strategy context not opened"))?;
     };
 }
 
 macro_rules! open_strategy_elevated {
     ($self: ident, $token: expr, $peer_context:ident, $lock:ident, $guard:ident, $strategy_context:ident) => {
-        let $peer_context = $self
-            .peer_context
-            .get($token)
-            .ok_or(Status::unauthenticated("Token not found"))?;
-        let $lock = $self.strategy_lock.get(&$peer_context.strategy_id).unwrap();
-        let $guard = $lock.lock().await;
-        let $strategy_context = $self
-            .strategy_context
-            .get(&$peer_context.strategy_id)
-            .ok_or(Status::unauthenticated("Strategy not opened"))?;
+        utils::open_strategy!(
+            $self,
+            $token,
+            $peer_context,
+            $lock,
+            $guard,
+            $strategy_context
+        );
 
         if !$strategy_context.elevated_peers.iter().any(|s| s == $token) {
-            return Err(Status::permission_denied("Not elevated"));
+            return Err(Status::permission_denied(
+                "Insufficient permissions: peer is not elevated",
+            ));
         }
     };
 }
@@ -110,12 +125,10 @@ impl StratSyncService {
                 continue;
             }
 
-            let opt_peer_context = self.peer_context.get(peer);
-            if opt_peer_context.is_none() {
-                continue;
-            }
-
-            let tx = opt_peer_context.unwrap().tx.clone();
+            let tx = match self.peer_context.get(peer) {
+                Some(peer_context) => peer_context.tx.clone(),
+                None => continue,
+            };
             let event = event.clone();
 
             if tx.is_closed() {

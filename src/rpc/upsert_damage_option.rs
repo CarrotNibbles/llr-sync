@@ -26,25 +26,24 @@ impl StratSyncService {
 
         let damage_option = payload
             .damage_option
-            .ok_or(Status::invalid_argument("No damage option specified"))?;
+            .ok_or_else(|| Status::invalid_argument("No damage option specified"))?;
         let damage_id =
             utils::parse_string_to_uuid(&damage_option.damage, "Damage id has an invalid format")?;
-        let primary_target_id = match damage_option.primary_target {
-            Some(ref id) => Some(utils::parse_string_to_uuid(
-                id,
-                "Primary target id has an invalid format",
-            )?),
-            None => None,
-        };
+        let primary_target_id = damage_option
+            .primary_target
+            .as_deref()
+            .map(|id| utils::parse_string_to_uuid(id, "Primary target id has an invalid format"))
+            .transpose()?;
+
         let num_shared = damage_option.num_shared;
 
         let damage = raid
             .damages
             .iter()
             .find(|damage| damage.id == damage_id)
-            .ok_or(Status::failed_precondition(
-                "Damage not found or not belongs to the specified raid",
-            ))?;
+            .ok_or_else(|| {
+                Status::failed_precondition("Damage not found or not belongs to the specified raid")
+            })?;
 
         if let Some(s) = num_shared {
             if s > damage.max_shared {

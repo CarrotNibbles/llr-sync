@@ -24,7 +24,7 @@ impl StratSyncService {
 
         let entry = payload
             .entry
-            .ok_or(Status::invalid_argument("No entry specified"))?;
+            .ok_or_else(|| Status::invalid_argument("No entry specified"))?;
         let id = utils::parse_string_to_uuid(&entry.id, "id has an invalid format")?;
         let player_id = utils::parse_string_to_uuid(&entry.player, "player has an invalid format")?;
         let action_id = utils::parse_string_to_uuid(&entry.action, "action has an invalid format")?;
@@ -34,9 +34,9 @@ impl StratSyncService {
             .players
             .iter()
             .find(|player| player.id == player_id.to_string())
-            .ok_or(Status::failed_precondition("Player not found"))?;
+            .ok_or_else(|| Status::failed_precondition("Player not found"))?;
 
-        let job = player.job.clone().ok_or(Status::failed_precondition(
+        let job = player.job.clone().ok_or_else(|| Status::failed_precondition(
             "Cannot upsert entries with an empty job",
         ))?;
 
@@ -47,7 +47,7 @@ impl StratSyncService {
             .iter()
             .find(|action| action.id == action_id)
             .map(|action| action.to_owned())
-            .ok_or(Status::failed_precondition("Action not found"))?;
+            .ok_or_else(|| Status::failed_precondition("Action not found"))?;
 
         let mut entries_after = strategy_context.entries.clone();
         let mut original_entry: Option<Entry> = None;

@@ -26,17 +26,15 @@ impl StratSyncService {
         let job_as_string = payload.job.clone();
 
         let id = utils::parse_string_to_uuid(&payload.id, "id has an invalid format")?;
-        let job = if let Some(j) = &payload.job {
-            Some(Job::from_str(j).or(Err(Status::invalid_argument("Invalid job")))?)
-        } else {
-            None
-        };
+        let job = payload.job.as_deref()
+            .map(|j| Job::from_str(j).map_err(|_| Status::invalid_argument("Invalid job")))
+            .transpose()?;
 
         strategy_context
             .players
             .iter()
             .find(|player| player.id == id.to_string())
-            .ok_or(Status::failed_precondition("Player not found"))?;
+            .ok_or_else(|| Status::failed_precondition("Player not found"))?;
 
         tokio::try_join!(
             sqlx::query!(

@@ -24,23 +24,20 @@ impl StratSyncService {
 
         let id = utils::parse_string_to_uuid(&payload.id, "id has an invalid format")?;
 
+        let initial_len = strategy_context.entries.len();
         let mut entries_after = strategy_context.entries.clone();
-        let mut delta_len = entries_after.len();
-        entries_after = entries_after
-            .iter()
-            .filter(|entry| entry.id != id.to_string())
-            .map(|entry| entry.to_owned())
-            .collect();
-        delta_len -= entries_after.len();
+        entries_after.retain(|entry| entry.id != id.to_string());
 
-        if delta_len == 0 {
+        let removed_entries_count = initial_len - entries_after.len();
+
+        if removed_entries_count == 0 {
             return Err(Status::failed_precondition("Entry not found"));
         }
 
         tokio::try_join!(
             sqlx::query!(
                 r#"DELETE FROM public.strategy_player_entries
-                             WHERE id = $1"#,
+                         WHERE id = $1"#,
                 id,
             )
             .execute(&self.pool),
