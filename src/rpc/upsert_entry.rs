@@ -6,6 +6,8 @@ use crate::utils;
 
 use tonic::{Request, Response, Status};
 
+static MAX_COUNTDOWN: i32 = 1800;
+
 impl StratSyncService {
     pub async fn rpc_upsert_entry(
         &self,
@@ -22,6 +24,8 @@ impl StratSyncService {
             strategy_context
         );
 
+        let raid = self.raid_cache.get(&strategy_context.raid_id).unwrap();
+
         let entry = payload
             .entry
             .ok_or_else(|| Status::invalid_argument("No entry specified"))?;
@@ -30,15 +34,19 @@ impl StratSyncService {
         let action_id = utils::parse_string_to_uuid(&entry.action, "action has an invalid format")?;
         let use_at = entry.use_at;
 
+        if use_at < -MAX_COUNTDOWN || use_at > raid.duration {
+            return Err(Status::invalid_argument("use_at is out of range"));
+        }
+
         let player = strategy_context
             .players
             .iter()
             .find(|player| player.id == player_id.to_string())
             .ok_or_else(|| Status::failed_precondition("Player not found"))?;
 
-        let job = player.job.clone().ok_or_else(|| Status::failed_precondition(
-            "Cannot upsert entries with an empty job",
-        ))?;
+        let job = player.job.clone().ok_or_else(|| {
+            Status::failed_precondition("Cannot upsert entries with an empty job")
+        })?;
 
         let action = self
             .action_cache
@@ -66,17 +74,7 @@ impl StratSyncService {
             .filter(|entry| {
                 entry.player == player_id.to_string() && entry.action == action_id.to_string()
             })
-            .map(|entry| {
-                (
-                    entry.use_at,
-                    entry.use_at
-                        + if action.stacks > 1 {
-                            0
-                        } else {
-                            action.cooldown
-                        },
-                )
-            })
+            .map(|entry| (entry.use_at, entry.use_at + action.cooldown))
             .collect();
 
         column_covering.sort();

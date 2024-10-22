@@ -48,7 +48,9 @@ pub fn parse_authorization_header(metadata: &MetadataMap) -> Result<Option<Uuid>
         .ok_or_else(|| Status::invalid_argument("Authorization header is malformed"))?;
 
     if token_type != "Bearer" {
-        return Err(Status::invalid_argument("Authorization token must be of type 'Bearer'"));
+        return Err(Status::invalid_argument(
+            "Authorization token must be of type 'Bearer'",
+        ));
     }
 
     let mut validation = Validation::new(Algorithm::HS256);

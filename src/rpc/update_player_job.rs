@@ -26,7 +26,9 @@ impl StratSyncService {
         let job_as_string = payload.job.clone();
 
         let id = utils::parse_string_to_uuid(&payload.id, "id has an invalid format")?;
-        let job = payload.job.as_deref()
+        let job = payload
+            .job
+            .as_deref()
             .map(|j| Job::from_str(j).map_err(|_| Status::invalid_argument("Invalid job")))
             .transpose()?;
 
@@ -39,15 +41,15 @@ impl StratSyncService {
         tokio::try_join!(
             sqlx::query!(
                 r#"UPDATE public.strategy_players
-                          SET job = $1
-                        WHERE id = $2"#,
+                      SET job = $1
+                    WHERE id = $2"#,
                 job as Option<Job>,
                 id,
             )
             .execute(&self.pool),
             sqlx::query!(
                 r#"DELETE FROM public.strategy_player_entries
-                             WHERE player = $1"#,
+                         WHERE player = $1"#,
                 id,
             )
             .execute(&self.pool),
