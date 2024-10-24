@@ -38,18 +38,11 @@ impl StratSync for StratSyncService {
         self.rpc_upsert_damage_option(request).await
     }
 
-    async fn upsert_entry(
+    async fn mutate_entries(
         &self,
-        request: Request<UpsertEntryRequest>,
+        request: Request<MutateEntriesRequest>,
     ) -> Result<Response<()>, Status> {
-        self.rpc_upsert_entry(request).await
-    }
-
-    async fn delete_entry(
-        &self,
-        request: Request<DeleteEntryRequest>,
-    ) -> Result<Response<()>, Status> {
-        self.rpc_delete_entry(request).await
+        self.rpc_mutate_entries(request).await
     }
 
     async fn update_player_job(
