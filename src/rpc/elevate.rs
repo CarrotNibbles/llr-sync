@@ -35,12 +35,15 @@ impl StratSyncService {
         .fetch_one(&self.pool)
         .await
         .unwrap();
-        let strategy_password = row.password;
         let is_strategy_editable = row.is_editable;
 
         if !is_strategy_editable {
             return Err(Status::permission_denied("Strategy is not editable"));
         }
+
+        let strategy_password = row
+            .password
+            .ok_or_else(|| Status::permission_denied("Strategy password is not set"))?;
 
         if !bcrypt::verify(payload.password.as_str(), strategy_password.as_str()).unwrap_or(false) {
             return Err(Status::permission_denied("Invalid password"));

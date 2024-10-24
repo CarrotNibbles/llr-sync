@@ -32,7 +32,7 @@ impl StratSyncService {
         let raid_id = row.raid;
 
         let is_author = utils::parse_authorization_header(&metadata)?
-            .map(|user_id| user_id == row.author)
+            .map(|user_id| Some(user_id) == row.author)
             .unwrap_or(false);
 
         if !row.is_public && !is_author {
