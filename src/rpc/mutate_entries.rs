@@ -181,23 +181,23 @@ impl StratSyncService {
             .insert(peer_context.strategy_id, Arc::new(strategy_context_after));
 
         if !rejected_upserts.is_empty() {
-            let current_entries_set: HashSet<_> = strategy_context
+            let current_entries_map: HashMap<String, i32> = strategy_context
                 .entries
                 .iter()
-                .map(|entry| entry.id.to_owned())
+                .map(|entry| (entry.id.to_owned(), entry.use_at))
                 .collect();
 
             let (entries_present, entries_not_present): (Vec<_>, Vec<_>) = rejected_upserts
                 .into_iter()
-                .partition(|(_, _, id, _)| current_entries_set.contains(&id.to_string()));
+                .partition(|(_, _, id, _)| current_entries_map.contains_key(&id.to_string()));
 
             let upserts_self: Vec<Entry> = entries_present
                 .into_iter()
-                .map(|(player_id, action_id, id, use_at)| Entry {
+                .map(|(player_id, action_id, id, _)| Entry {
                     id: id.to_string(),
                     player: player_id.to_string(),
                     action: action_id.to_string(),
-                    use_at,
+                    use_at: current_entries_map[&id.to_string()],
                 })
                 .collect();
             let deletes_self: Vec<String> = entries_not_present
