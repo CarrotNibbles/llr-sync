@@ -66,7 +66,7 @@ pub async fn build_stratsync() -> StratSyncServer<StratSyncService> {
     let action_cache: Cache<String, Arc<Vec<ActionInfo>>> = Cache::builder().build();
 
     sqlx::query!(
-        r#"SELECT id, job AS "job: String", cooldown, stacks
+        r#"SELECT id, job AS "job: String", cooldown, charges
            FROM public.actions"#
     )
     .fetch_all(&pool)
@@ -78,7 +78,7 @@ pub async fn build_stratsync() -> StratSyncServer<StratSyncService> {
         abilities.push(ActionInfo {
             id: row.id,
             cooldown: row.cooldown,
-            stacks: row.stacks,
+            charges: row.charges,
         });
 
         action_cache.insert(row.job.to_owned(), Arc::new(abilities))

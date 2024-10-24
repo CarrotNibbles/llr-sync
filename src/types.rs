@@ -70,7 +70,7 @@ pub struct RaidInfo {
 pub struct ActionInfo {
     pub id: Uuid,
     pub cooldown: i32,
-    pub stacks: i32,
+    pub charges: i32,
 }
 
 pub struct StratSyncService {

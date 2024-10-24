@@ -131,14 +131,21 @@ impl StratSyncService {
                 use_at_prov_map.extend(upserts_col.iter().cloned());
             }
 
-            let mut col_covering: Vec<_> = use_at_prov_map
-                .values()
-                .map(|&use_at| (use_at, use_at + action.cooldown))
-                .collect();
+            let mut col_sweeping: Vec<(i32, i32)> = Vec::new();
+            for use_at in use_at_prov_map.values() {
+                col_sweeping.push((*use_at, 1));
+                col_sweeping.push((*use_at + action.cooldown, -1));
+            }
+            col_sweeping.sort();
 
-            col_covering.sort();
+            let mut max_simultaneous_uses = 0;
+            let mut current_uses = 0;
+            for (_, delta) in col_sweeping {
+                current_uses += delta;
+                max_simultaneous_uses = max_simultaneous_uses.max(current_uses);
+            }
 
-            if col_covering.windows(2).all(|pair| pair[0].1 <= pair[1].0) {
+            if max_simultaneous_uses <= action.charges {
                 if let Some(upserts_col) = upserts_col {
                     accepted_upserts.extend(
                         upserts_col
@@ -300,7 +307,8 @@ impl StratSyncService {
                 deletes: deletes_broadcast,
             });
 
-            self.broadcast(&payload.token, &strategy_context, event).await;
+            self.broadcast(&payload.token, &strategy_context, event)
+                .await;
         }
 
         Ok(Response::new(()))
