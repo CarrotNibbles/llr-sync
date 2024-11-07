@@ -9,6 +9,11 @@ use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
+const STRATEGY_CAPACITY: u64 = 65536;
+const STRATEGY_TTI: Duration = Duration::from_secs(24 * 60 * 60);  // 24 hours
+const PEER_CAPACITY: u64 = 65536;
+const PEER_TTI: Duration = Duration::from_secs(12 * 60 * 60);  // 12 hours
+
 #[tonic::async_trait]
 impl StratSync for StratSyncService {
     type EventStream = ReceiverStream<Result<EventResponse, Status>>;
@@ -87,12 +92,16 @@ pub async fn build_stratsync() -> StratSyncServer<StratSyncService> {
     let raid_cache: Cache<Uuid, Arc<RaidInfo>> = Cache::builder().build();
 
     let strategy_lock: Cache<Uuid, Arc<Mutex<()>>> = Cache::builder().build();
-    let strategy_context: Cache<Uuid, Arc<StrategyContext>> = Cache::builder().build();
+    let strategy_context: Cache<Uuid, Arc<StrategyContext>> = Cache::builder()
+        .max_capacity(STRATEGY_CAPACITY)
+        .time_to_idle(STRATEGY_TTI)
+        .build();
 
     let strategy_lock_cloned = strategy_lock.clone();
     let strategy_context_cloned = strategy_context.clone();
     let peer_context: Cache<String, Arc<PeerContext>> = Cache::builder()
-        .time_to_idle(Duration::from_secs(12 * 60 * 60))
+        .max_capacity(PEER_CAPACITY)
+        .time_to_idle(PEER_TTI)
         .eviction_listener(move |k: Arc<String>, v: Arc<PeerContext>, _| {
             if !v.tx.is_closed() {
                 let cloned_tx = v.tx.clone();
