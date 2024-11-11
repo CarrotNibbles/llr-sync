@@ -6,6 +6,8 @@ use strum_macros::EnumString;
 use tokio::sync::{mpsc::Sender, Mutex};
 use tonic::Status;
 
+pub const MAX_COUNTDOWN: i32 = 1800;
+
 #[derive(Clone, Debug, PartialEq, PartialOrd, sqlx::Type, EnumString)]
 #[sqlx(type_name = "job")]
 pub enum Job {

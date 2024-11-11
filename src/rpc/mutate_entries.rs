@@ -8,8 +8,6 @@ use crate::utils;
 use sqlx::types::Uuid;
 use tonic::{Request, Response, Status};
 
-static MAX_COUNTDOWN: i32 = 1800;
-
 impl StratSyncService {
     pub async fn rpc_mutate_entries(
         &self,

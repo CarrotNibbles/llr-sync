@@ -10,9 +10,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 const STRATEGY_CAPACITY: u64 = 65536;
-const STRATEGY_TTI: Duration = Duration::from_secs(24 * 60 * 60);  // 24 hours
+const STRATEGY_TTI: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
 const PEER_CAPACITY: u64 = 65536;
-const PEER_TTI: Duration = Duration::from_secs(12 * 60 * 60);  // 12 hours
+const PEER_TTI: Duration = Duration::from_secs(12 * 60 * 60); // 12 hours
 
 #[tonic::async_trait]
 impl StratSync for StratSyncService {
@@ -55,6 +55,20 @@ impl StratSync for StratSyncService {
         request: Request<UpdatePlayerJobRequest>,
     ) -> Result<Response<()>, Status> {
         self.rpc_update_player_job(request).await
+    }
+
+    async fn upsert_note(
+        &self,
+        request: Request<UpsertNoteRequest>,
+    ) -> Result<Response<()>, Status> {
+        self.rpc_upsert_note(request).await
+    }
+
+    async fn delete_note(
+        &self,
+        request: Request<DeleteNoteRequest>,
+    ) -> Result<Response<()>, Status> {
+        self.rpc_delete_note(request).await
     }
 }
 
