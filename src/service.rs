@@ -77,7 +77,7 @@ pub async fn build_stratsync() -> StratSyncServer<StratSyncService> {
         env::var("DATABASE_URL").expect("DATABASE_URL must be set on the environment");
 
     let pool = PgPoolOptions::new()
-        .max_connections(32)
+        .max_connections(8)
         .connect(&database_url)
         .await
         .expect("Unable to connect to database");
