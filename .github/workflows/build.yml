@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 env:
-  DOCKER_TAG: ghcr.io/carrotnibbles/llr-sync:latest
+  IMAGE_NAME: ghcr.io/carrotnibbles/llr-sync
 
 jobs:
   build:
@@ -70,12 +70,34 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
+      # Generate tags and OCI labels
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            # keep :latest for humans (don’t rely on it for automation)
+            type=raw,value=latest
+            # monotonically increasing SemVer for Flux semver policy
+            type=raw,value=v0.0.${{ github.run_number }}
+            # commit traceability
+            type=sha,format=short,prefix=sha-
+            # lexicographically sortable timestamp (UTC)
+            type=raw,value=ts-{{date 'YYYYMMDDHHmmss'}}
+          labels: |
+            org.opencontainers.image.title=llr-sync
+            org.opencontainers.image.description=llr-sync application image
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created={{date 'YYYY-MM-DDTHH:mm:ssZ'}}
+
       - uses: docker/build-push-action@v6
         with:
           push: true
           context: .
           file: ./Dockerfile
-          tags: ${{ env.DOCKER_TAG }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max

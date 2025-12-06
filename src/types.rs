@@ -40,12 +40,14 @@ pub enum Job {
 pub struct PeerContext {
     pub strategy_id: Uuid,
     pub raid_id: Uuid,
+    pub user_id: Option<Uuid>,
     pub is_author: bool,
     pub tx: Sender<Result<EventResponse, Status>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct StrategyContext {
+    pub version: u64,
     pub raid_id: Uuid,
     pub peers: Vec<String>,
     pub elevated_peers: Vec<String>,
@@ -75,6 +77,11 @@ pub struct ActionInfo {
     pub charges: i32,
 }
 
+pub struct CleanupTask {
+    pub peer_id: String,
+    pub strategy_id: Uuid,
+}
+
 pub struct StratSyncService {
     pub pool: Pool<Postgres>,
     pub action_cache: Cache<String, Arc<Vec<ActionInfo>>>,
@@ -82,4 +89,5 @@ pub struct StratSyncService {
     pub strategy_lock: Cache<Uuid, Arc<Mutex<()>>>,
     pub strategy_context: Cache<Uuid, Arc<StrategyContext>>,
     pub peer_context: Cache<String, Arc<PeerContext>>,
+    pub cleanup_tx: tokio::sync::mpsc::UnboundedSender<CleanupTask>,
 }

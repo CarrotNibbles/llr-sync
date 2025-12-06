@@ -4,14 +4,17 @@ use sqlx::types::Uuid;
 use std::{
     env,
     sync::{Arc, OnceLock},
+    time::Duration,
 };
-use tokio::task::JoinSet;
+
 use tonic::{metadata::MetadataMap, Status};
 
 use crate::{
     protos::stratsync::{event_response, EventResponse},
     types::*,
 };
+
+const DB_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
@@ -22,12 +25,31 @@ struct Claims {
     pub sub: String,
 }
 
+#[allow(clippy::result_large_err)]
 pub fn parse_string_to_uuid(id: &str, message: impl Into<String>) -> Result<Uuid, Status> {
-    Uuid::parse_str(id).map_err(|_| Status::invalid_argument(message))
+    Uuid::parse_str(id).map_err(|e| {
+        tracing::error!("Failed to parse UUID '{}': {:?}", id, e);
+        Status::invalid_argument(message)
+    })
+}
+
+/// Wraps a database operation with a timeout
+pub async fn with_db_timeout<F, T>(operation: F) -> Result<T, Status>
+where
+    F: std::future::Future<Output = Result<T, sqlx::Error>>,
+{
+    tokio::time::timeout(DB_TIMEOUT, operation)
+        .await
+        .map_err(|_| Status::deadline_exceeded("Database operation timed out"))?
+        .map_err(|e| {
+            tracing::error!("Database error: {:?}", e);
+            Status::internal("Database error")
+        })
 }
 
 static DECODING_KEY: OnceLock<DecodingKey> = OnceLock::new();
 
+#[allow(clippy::result_large_err)]
 pub fn parse_authorization_header(metadata: &MetadataMap) -> Result<Option<Uuid>, Status> {
     let decoding_key = DECODING_KEY.get_or_init(|| {
         let jwt_secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set in the environment");
@@ -120,31 +142,42 @@ impl StratSyncService {
         strategy_context: &Arc<StrategyContext>,
         event: event_response::Event,
     ) {
-        let mut tasks = JoinSet::new();
+        let mut failed_peers = Vec::new();
 
         for peer in &strategy_context.peers {
             if token == peer {
                 continue;
             }
 
-            let tx = match self.peer_context.get(peer) {
-                Some(peer_context) => peer_context.tx.clone(),
-                None => continue,
+            let peer_context = match self.peer_context.get(peer) {
+                Some(ctx) => ctx,
+                None => {
+                    failed_peers.push(peer.clone());
+                    continue;
+                }
             };
+
+            let tx = peer_context.tx.clone();
             let event = event.clone();
 
             if tx.is_closed() {
-                self.peer_context.invalidate(peer);
+                failed_peers.push(peer.clone());
                 continue;
             }
 
-            tasks.spawn(async move {
-                tx.send(Ok(EventResponse { event: Some(event) }))
-                    .await
-                    .unwrap()
-            });
+            if tx
+                .send(Ok(EventResponse { event: Some(event) }))
+                .await
+                .is_err()
+            {
+                failed_peers.push(peer.clone());
+            }
         }
 
-        while (tasks.join_next().await).is_some() {}
+        // Disconnect failed peers to prevent desynchronization
+        for peer in failed_peers {
+            tracing::warn!("Disconnecting peer {} due to broadcast failure", peer);
+            self.peer_context.invalidate(&peer);
+        }
     }
 }

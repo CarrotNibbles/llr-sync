@@ -15,6 +15,12 @@ impl StratSyncService {
     ) -> Result<Response<()>, Status> {
         let payload = request.into_inner();
 
+        tracing::info!(
+            "Mutate entries request: {} upserts, {} deletes",
+            payload.upserts.len(),
+            payload.deletes.len()
+        );
+
         utils::open_strategy_elevated!(
             self,
             &payload.token,
@@ -24,33 +30,63 @@ impl StratSyncService {
             strategy_context
         );
 
-        let raid = self.raid_cache.get(&strategy_context.raid_id).unwrap();
+        tracing::debug!(
+            "Processing mutate entries for strategy {}, version {}",
+            peer_context.strategy_id,
+            strategy_context.version
+        );
+
+        let raid = self
+            .raid_cache
+            .get(&strategy_context.raid_id)
+            .ok_or_else(|| Status::internal("Raid data not found"))?;
 
         let player_lookup: HashMap<Uuid, &Player> = strategy_context
             .players
             .iter()
-            .map(|player| (Uuid::parse_str(&player.id).unwrap(), player))
-            .collect();
+            .map(|player| {
+                let uuid = Uuid::parse_str(&player.id).map_err(|e| {
+                    tracing::error!(
+                        "Corrupt player UUID in strategy {}: {} - {:?}",
+                        peer_context.strategy_id,
+                        player.id,
+                        e
+                    );
+                    Status::internal("Data corruption detected: invalid player UUID")
+                })?;
+                Ok((uuid, player))
+            })
+            .collect::<Result<_, Status>>()?;
         let mut action_lookup: HashMap<Uuid, ActionInfo> = HashMap::new();
         for job in player_lookup
             .values()
             .filter_map(|player| player.job.as_ref())
         {
-            for action in self.action_cache.get(job).unwrap().iter() {
-                action_lookup.insert(action.id, action.clone());
+            if let Some(actions) = self.action_cache.get(job) {
+                for action in actions.iter() {
+                    action_lookup.insert(action.id, action.clone());
+                }
             }
         }
 
         let mut grouped_upserts: HashMap<(Uuid, Uuid), Vec<(Uuid, i32)>> = HashMap::new();
         for entry in &payload.upserts {
-            let id = utils::parse_string_to_uuid(&entry.id, "id has an invalid format")?;
+            let id = utils::parse_string_to_uuid(&entry.id, "Entry id has an invalid format")?;
             let player_id =
-                utils::parse_string_to_uuid(&entry.player, "player has an invalid format")?;
+                utils::parse_string_to_uuid(&entry.player, "Player id has an invalid format")?;
             let action_id =
-                utils::parse_string_to_uuid(&entry.action, "action has an invalid format")?;
+                utils::parse_string_to_uuid(&entry.action, "Action id has an invalid format")?;
             let use_at = entry.use_at;
 
             if use_at < -MAX_COUNTDOWN || use_at > raid.duration {
+                tracing::warn!(
+                    "Invalid use_at {} for entry {} in strategy {}, valid range: {} to {}",
+                    use_at,
+                    id,
+                    peer_context.strategy_id,
+                    -MAX_COUNTDOWN,
+                    raid.duration
+                );
                 return Err(Status::invalid_argument("use_at is out of range"));
             }
 
@@ -59,6 +95,11 @@ impl StratSyncService {
                 .ok_or_else(|| Status::failed_precondition("Player not found"))?;
 
             if player.job.is_none() {
+                tracing::warn!(
+                    "Cannot upsert entry for player {} without job in strategy {}",
+                    player_id,
+                    peer_context.strategy_id
+                );
                 return Err(Status::failed_precondition(
                     "Cannot upsert entries with an empty job",
                 ));
@@ -81,26 +122,61 @@ impl StratSyncService {
                 .iter()
                 .find(|entry| entry.id == *id)
             {
-                if match grouped_upserts.get(&(
-                    Uuid::parse_str(&entry.player).unwrap(),
-                    Uuid::parse_str(&entry.action).unwrap(),
-                )) {
+                let player_uuid = Uuid::parse_str(&entry.player).map_err(|e| {
+                    tracing::error!(
+                        "Corrupt entry player UUID in strategy {}: {} - {:?}",
+                        peer_context.strategy_id,
+                        entry.player,
+                        e
+                    );
+                    Status::internal("Data corruption detected: invalid entry player UUID")
+                })?;
+                let action_uuid = Uuid::parse_str(&entry.action).map_err(|e| {
+                    tracing::error!(
+                        "Corrupt entry action UUID in strategy {}: {} - {:?}",
+                        peer_context.strategy_id,
+                        entry.action,
+                        e
+                    );
+                    Status::internal("Data corruption detected: invalid entry action UUID")
+                })?;
+
+                if match grouped_upserts.get(&(player_uuid, action_uuid)) {
                     Some(upserts) => upserts
                         .iter()
                         .any(|(upsert_id, _)| upsert_id.to_string() == *id),
                     None => false,
                 } {
+                    tracing::warn!(
+                        "Cannot delete entry {} that is being upserted in strategy {}",
+                        id,
+                        peer_context.strategy_id
+                    );
                     return Err(Status::invalid_argument(
                         "Cannot delete an entry that is being upserted",
                     ));
                 }
 
-                accepted_deletes.push(Uuid::parse_str(id).unwrap());
+                let uuid = Uuid::parse_str(id).map_err(|e| {
+                    tracing::error!(
+                        "Invalid delete UUID in strategy {}: {} - {:?}",
+                        peer_context.strategy_id,
+                        id,
+                        e
+                    );
+                    Status::invalid_argument("Invalid entry ID format")
+                })?;
+                accepted_deletes.push(uuid);
             }
         }
 
-        entries_after
-            .retain(|entry| !accepted_deletes.contains(&Uuid::parse_str(&entry.id).unwrap()));
+        entries_after.retain(|entry| match Uuid::parse_str(&entry.id) {
+            Ok(uuid) => !accepted_deletes.contains(&uuid),
+            Err(e) => {
+                tracing::error!("Corrupt entry UUID during retain: {} - {:?}", entry.id, e);
+                false
+            }
+        });
 
         let keys_to_check: HashSet<_> = grouped_upserts
             .keys()
@@ -108,7 +184,9 @@ impl StratSyncService {
             .collect();
 
         for (player_id, action_id) in keys_to_check {
-            let action = action_lookup.get(&action_id).unwrap();
+            let Some(action) = action_lookup.get(&action_id) else {
+                continue;
+            };
 
             let entries_col: Vec<_> = entries_after
                 .iter()
@@ -122,8 +200,18 @@ impl StratSyncService {
 
             let mut use_at_prov_map: HashMap<Uuid, i32> = entries_col
                 .into_iter()
-                .map(|entry| (Uuid::parse_str(&entry.id).unwrap(), entry.use_at))
-                .collect();
+                .map(|entry| {
+                    let uuid = Uuid::parse_str(&entry.id).map_err(|e| {
+                        tracing::error!(
+                            "Corrupt entry UUID in entries_col: {} - {:?}",
+                            entry.id,
+                            e
+                        );
+                        Status::internal("Data corruption detected: invalid entry UUID")
+                    })?;
+                    Ok((uuid, entry.use_at))
+                })
+                .collect::<Result<_, Status>>()?;
 
             if let Some(upserts_col) = upserts_col {
                 use_at_prov_map.extend(upserts_col.iter().cloned());
@@ -173,12 +261,29 @@ impl StratSyncService {
             }
         }
 
+        // Optimistic locking: increment version
         let mut strategy_context_after = (*strategy_context).to_owned();
+        let old_version = strategy_context_after.version;
+        strategy_context_after.version += 1;
         strategy_context_after.entries = entries_after;
         self.strategy_context
             .insert(peer_context.strategy_id, Arc::new(strategy_context_after));
 
+        tracing::info!(
+            "Accepted {} upserts, {} deletes for strategy {}, version {} -> {}",
+            accepted_upserts.len(),
+            accepted_deletes.len(),
+            peer_context.strategy_id,
+            old_version,
+            old_version + 1
+        );
+
         if !rejected_upserts.is_empty() {
+            tracing::warn!(
+                "Rejected {} upserts due to cooldown violations in strategy {}",
+                rejected_upserts.len(),
+                peer_context.strategy_id
+            );
             let current_entries_map: HashMap<String, i32> = strategy_context
                 .entries
                 .iter()
@@ -209,28 +314,46 @@ impl StratSyncService {
                     deletes: deletes_self,
                 });
 
-                peer_context
+                let _ = peer_context
                     .tx
                     .send(Ok(EventResponse { event: Some(event) }))
-                    .await
-                    .unwrap();
+                    .await;
             }
         }
 
-        let delete_query = if !accepted_deletes.is_empty() {
-            let query = sqlx::query!(
-                r#"DELETE FROM public.strategy_player_entries
-                         WHERE id = ANY($1)"#,
-                &accepted_deletes
+        // Use database transaction for atomicity
+        tracing::debug!(
+            "Beginning transaction for mutate entries in strategy {}",
+            peer_context.strategy_id
+        );
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            tracing::error!("Failed to begin transaction: {:?}", e);
+            Status::internal("Failed to begin transaction")
+        })?;
+
+        if !accepted_deletes.is_empty() {
+            tracing::debug!(
+                "Deleting {} entries from strategy {}",
+                accepted_deletes.len(),
+                peer_context.strategy_id
+            );
+            utils::with_db_timeout(
+                sqlx::query!(
+                    r#"DELETE FROM public.strategy_player_entries
+                             WHERE id = ANY($1)"#,
+                    &accepted_deletes
+                )
+                .execute(&mut *tx),
             )
-            .execute(&self.pool);
+            .await?;
+        }
 
-            Some(query)
-        } else {
-            None
-        };
-
-        let upsert_query = if !accepted_upserts.is_empty() {
+        if !accepted_upserts.is_empty() {
+            tracing::debug!(
+                "Upserting {} entries in strategy {}",
+                accepted_upserts.len(),
+                peer_context.strategy_id
+            );
             let (player_vec, action_vec, id_vec, use_at_vec) = accepted_upserts.iter().fold(
                 (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
                 |(mut player_vec, mut action_vec, mut id_vec, mut use_at_vec),
@@ -243,46 +366,54 @@ impl StratSyncService {
                 },
             );
 
-            let query = sqlx::query!(
-                r#"WITH data AS (SELECT *
-                                   FROM UNNEST($1::uuid[], $2::uuid[], $3::uuid[], $4::int[])
-                                     AS t(player, action, id, use_at))
-               INSERT INTO public.strategy_player_entries (player, action, id, use_at)
-                    SELECT * FROM data
-               ON CONFLICT (id)
-             DO UPDATE SET player = EXCLUDED.player,
-                           action = EXCLUDED.action,
-                           use_at = EXCLUDED.use_at"#,
-                &player_vec,
-                &action_vec,
-                &id_vec,
-                &use_at_vec
+            utils::with_db_timeout(
+                sqlx::query!(
+                    r#"WITH data AS (SELECT *
+                                       FROM UNNEST($1::uuid[], $2::uuid[], $3::uuid[], $4::int[])
+                                         AS t(player, action, id, use_at))
+                   INSERT INTO public.strategy_player_entries (player, action, id, use_at)
+                        SELECT * FROM data
+                   ON CONFLICT (id)
+                 DO UPDATE SET player = EXCLUDED.player,
+                               action = EXCLUDED.action,
+                               use_at = EXCLUDED.use_at"#,
+                    &player_vec,
+                    &action_vec,
+                    &id_vec,
+                    &use_at_vec
+                )
+                .execute(&mut *tx),
             )
-            .execute(&self.pool);
-
-            Some(query)
-        } else {
-            None
-        };
-
-        let update_modified_at_query = sqlx::query!(
-            r#"SELECT update_modified_at ($1)"#,
-            peer_context.strategy_id,
-        )
-        .execute(&self.pool);
-
-        match (delete_query, upsert_query) {
-            (Some(delete_query), Some(upsert_query)) => {
-                tokio::try_join!(delete_query, upsert_query, update_modified_at_query).unwrap();
-            }
-            (Some(delete_query), None) => {
-                tokio::try_join!(delete_query, update_modified_at_query).unwrap();
-            }
-            (None, Some(upsert_query)) => {
-                tokio::try_join!(upsert_query, update_modified_at_query).unwrap();
-            }
-            (None, None) => {}
+            .await?;
         }
+
+        utils::with_db_timeout(
+            sqlx::query!(
+                r#"SELECT update_modified_at ($1)"#,
+                peer_context.strategy_id,
+            )
+            .execute(&mut *tx),
+        )
+        .await?;
+
+        // Commit transaction
+        tracing::debug!(
+            "Committing transaction for strategy {}",
+            peer_context.strategy_id
+        );
+        tx.commit().await.map_err(|e| {
+            tracing::error!(
+                "Failed to commit transaction for strategy {}: {:?}",
+                peer_context.strategy_id,
+                e
+            );
+            Status::internal("Failed to commit transaction")
+        })?;
+
+        tracing::info!(
+            "Transaction committed successfully for strategy {}",
+            peer_context.strategy_id
+        );
 
         let upserts_broadcast: Vec<Entry> = accepted_upserts
             .into_iter()
@@ -300,6 +431,15 @@ impl StratSyncService {
             .collect();
 
         if !upserts_broadcast.is_empty() || !deletes_broadcast.is_empty() {
+            let upserts_count = upserts_broadcast.len();
+            let deletes_count = deletes_broadcast.len();
+
+            tracing::debug!(
+                "Broadcasting {} upserts and {} deletes for strategy {}",
+                upserts_count,
+                deletes_count,
+                peer_context.strategy_id
+            );
             let event = event_response::Event::MutateEntriesEvent(MutateEntriesEvent {
                 upserts: upserts_broadcast,
                 deletes: deletes_broadcast,
@@ -307,7 +447,19 @@ impl StratSyncService {
 
             self.broadcast(&payload.token, &strategy_context, event)
                 .await;
+
+            tracing::info!(
+                "Broadcast completed for strategy {}: {} upserts, {} deletes",
+                peer_context.strategy_id,
+                upserts_count,
+                deletes_count
+            );
         }
+
+        tracing::info!(
+            "Mutate entries completed successfully for strategy {}",
+            peer_context.strategy_id
+        );
 
         Ok(Response::new(()))
     }
